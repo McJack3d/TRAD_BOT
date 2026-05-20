@@ -1,0 +1,56 @@
+# Paper / dry-run config. Uses Binance testnet by default (set BINANCE_TESTNET=true).
+mode: paper
+starting_equity_eur: "1000"
+
+symbols:
+  - spot: BTC/USDT
+    perp: BTC/USDT:USDT
+    min_qty: "0.00001"
+    tick_size: "0.01"
+    qty_step: "0.00001"
+  - spot: ETH/USDT
+    perp: ETH/USDT:USDT
+    min_qty: "0.0001"
+    tick_size: "0.01"
+    qty_step: "0.0001"
+  - spot: SOL/USDT
+    perp: SOL/USDT:USDT
+    min_qty: "0.01"
+    tick_size: "0.001"
+    qty_step: "0.01"
+
+strategy:
+  entry_funding_threshold: "0.0002"
+  exit_funding_threshold: "0.00005"
+  min_dwell_hours: 24
+  perp_leverage: 2
+  equal_weight: true
+
+risk:
+  max_gross_notional_pct: "0.50"
+  max_total_exposure_pct: "1.00"
+  liquidation_halt_pct: "0.20"
+  margin_top_up_pct: "0.30"
+  pre_trade_min_liq_distance_pct: "0.30"
+  daily_loss_stop_pct: "0.02"
+  cumulative_loss_stop_pct: "0.10"
+  max_orders_per_minute: 10
+  max_clock_drift_ms: 100
+  reconciliation_stale_seconds: 300
+
+reconciliation:
+  interval_seconds: 60
+  position_size_tolerance_pct: "0.001"
+  balance_tolerance_usdt: "1.0"
+
+fees:
+  spot_taker_bps: "4.0"
+  perp_taker_bps: "4.0"
+  assumed_slippage_bps: "2.0"
+
+monitoring:
+  telegram_enabled: false
+  email_enabled: false
+  daily_digest_utc_hour: 8
+  weekly_digest_utc_dow: 0
+  ws_drop_alert_seconds: 30
