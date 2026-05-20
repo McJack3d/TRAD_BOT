@@ -16,7 +16,15 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from decimal import Decimal
+from pathlib import Path
+
+# Streamlit runs scripts from their own directory, so `src` isn't on the
+# path. Insert the project root before any `src.*` imports.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
 
 import pandas as pd
 import streamlit as st
