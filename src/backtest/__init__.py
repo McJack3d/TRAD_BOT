@@ -1,5 +1,7 @@
-from src.backtest.engine import BacktestEngine, BacktestResult
-from src.backtest.metrics import compute_metrics
-from src.backtest.walk_forward import walk_forward
+"""Backtesters.
 
-__all__ = ["BacktestEngine", "BacktestResult", "compute_metrics", "walk_forward"]
+Import the specific module you need rather than relying on this
+package's __init__ — keeps the funding-arb chain (which pulls in
+exchange adapters, market data, etc.) from being loaded when you only
+want the SMA trend backtest, and vice versa.
+"""

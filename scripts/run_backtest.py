@@ -8,7 +8,8 @@ from datetime import UTC, datetime
 from rich.console import Console
 from rich.table import Table
 
-from src.backtest import BacktestEngine, compute_metrics
+from src.backtest.engine import BacktestEngine
+from src.backtest.metrics import compute_metrics
 from src.backtest.walk_forward import walk_forward
 from src.config import BotConfig
 from src.logging_setup import configure_logging

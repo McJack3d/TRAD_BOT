@@ -8,7 +8,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.backtest import BacktestEngine, compute_metrics
+from src.backtest.engine import BacktestEngine
+from src.backtest.metrics import compute_metrics
 
 
 def _write_funding(data_dir: Path, symbol: str, n_events: int, rate: Decimal) -> None:
