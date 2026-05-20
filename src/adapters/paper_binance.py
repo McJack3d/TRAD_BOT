@@ -28,9 +28,11 @@ class PaperBinanceAdapter(FakeExchange):
         fee_bps: Decimal = Decimal("4.0"),
     ):
         super().__init__(starting_usdt=starting_usdt, slippage_bps=slippage_bps, fee_bps=fee_bps)
-        # Public-only ccxt clients — no API key.
-        self.spot = ccxt.binance({"enableRateLimit": True})
-        self.perp = ccxt.binanceusdm({"enableRateLimit": True})
+        # Public-only ccxt clients — no API key. Short timeouts so a blip in
+        # network connectivity doesn't hang the Streamlit UI for minutes.
+        common = {"enableRateLimit": True, "timeout": 10_000}
+        self.spot = ccxt.binance(common)
+        self.perp = ccxt.binanceusdm(common)
 
     async def connect(self) -> None:
         await self.spot.load_markets()

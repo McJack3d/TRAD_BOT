@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import threading
 from decimal import Decimal
 from pathlib import Path
 
@@ -40,8 +41,28 @@ SMA_WINDOW = int(os.environ.get("SIMPLE_BOT_SMA_WINDOW", "200"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 
 
+# ---------------------------------------------------------------------
+# Persistent background event loop.
+#
+# Streamlit re-runs the script on every interaction. Calling asyncio.run
+# inside the rerun creates a fresh event loop each time, while cached
+# resources (ccxt's aiohttp client, aiosqlite connection) still hold
+# references to the *original* loop. The second click then hangs forever
+# because the cached client's loop is dead. Workaround: keep a single
+# loop alive on a background thread for the lifetime of the process.
+# ---------------------------------------------------------------------
+@st.cache_resource
+def _background_loop() -> asyncio.AbstractEventLoop:
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, name="bot-loop", daemon=True)
+    thread.start()
+    return loop
+
+
 def _run(coro):
-    return asyncio.run(coro)
+    """Submit a coroutine to the persistent loop and block until it finishes."""
+    fut = asyncio.run_coroutine_threadsafe(coro, _background_loop())
+    return fut.result()
 
 
 @st.cache_resource
@@ -106,9 +127,18 @@ async def _load_equity_history(db: Database) -> pd.DataFrame:
     )
 
 
+def _fetch_status(bot: SimpleBot):
+    """Hit Binance for fresh status. Cached in session_state."""
+    with st.spinner("Fetching price + balances from Binance..."):
+        status = _run(bot.status())
+    st.session_state["status"] = status
+    st.session_state["status_age"] = pd.Timestamp.now(tz="UTC")
+    return status
+
+
 def main() -> None:
     st.set_page_config(page_title="BTC trend bot", layout="wide")
-    st.title("BTC trend bot — SMA-50 trend follower")
+    st.title(f"BTC trend bot — SMA-{SMA_WINDOW} trend follower")
 
     if LIVE:
         st.error("🚨 LIVE MODE — real money on Binance mainnet 🚨")
@@ -119,7 +149,13 @@ def main() -> None:
         )
 
     bot, exchange, db = _resources()
-    status = _run(bot.status())
+
+    # Fetch status once on first load; subsequent reruns reuse the cached
+    # value so the page is instant. The "Refresh price" button re-fetches.
+    if "status" not in st.session_state:
+        status = _fetch_status(bot)
+    else:
+        status = st.session_state["status"]
 
     # Top row: status metrics.
     c1, c2, c3, c4 = st.columns(4)
@@ -129,28 +165,43 @@ def main() -> None:
     equity = status.usdt_qty + status.btc_qty * status.last_price
     c4.metric("Equity (USDT)", f"${equity:,.2f}")
 
+    age = st.session_state.get("status_age")
+    if age is not None:
+        delta_s = (pd.Timestamp.now(tz="UTC") - age).total_seconds()
+        st.caption(f"Status last refreshed {int(delta_s)}s ago")
+
     st.divider()
 
     # Controls.
     st.subheader("Controls")
-    b1, b2, b3, b4 = st.columns(4)
+    b1, b2, b3, b4, b5 = st.columns(5)
     if b1.button("▶ Start trading", type="primary", use_container_width=True):
         _run(bot.enable())
+        _fetch_status(bot)
         st.rerun()
     if b2.button("⏸ Stop trading", use_container_width=True):
         _run(bot.disable())
+        _fetch_status(bot)
         st.rerun()
     if b3.button("🔄 Evaluate now", use_container_width=True):
-        sig = _run(bot.tick())
+        with st.spinner("Fetching daily closes + evaluating signal..."):
+            sig = _run(bot.tick())
         if sig is None:
             st.warning("Bot is disabled — click Start trading first.")
         else:
             _run(_snapshot_equity(db, bot))
             st.success(f"Signal: {sig.state.value.upper()} — {sig.reason}")
+        _fetch_status(bot)
         st.rerun()
     if b4.button("💵 Flatten to USDT", use_container_width=True):
-        _run(bot.flatten_now())
-        _run(_snapshot_equity(db, bot))
+        with st.spinner("Selling BTC to USDT..."):
+            _run(bot.flatten_now())
+            _run(_snapshot_equity(db, bot))
+        _fetch_status(bot)
+        st.rerun()
+    if b5.button("⟳ Refresh price", use_container_width=True):
+        _fetch_status(bot)
+        st.rerun()
         st.rerun()
 
     # Last signal info.
