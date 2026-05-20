@@ -182,14 +182,14 @@ def main() -> None:
     parser.add_argument(
         "--entry-buffer",
         type=float,
-        default=0.0,
-        help="Require close > SMA * (1 + buffer) to enter. e.g. 0.01 = 1%% buffer.",
+        default=0.01,
+        help="Require close > SMA * (1 + buffer) to enter. Default 0.01 (1%%).",
     )
     parser.add_argument(
         "--exit-buffer",
         type=float,
-        default=0.0,
-        help="Require close < SMA * (1 - buffer) to exit.",
+        default=0.01,
+        help="Require close < SMA * (1 - buffer) to exit. Default 0.01 (1%%).",
     )
     args = parser.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]

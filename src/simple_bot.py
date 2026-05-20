@@ -51,11 +51,15 @@ class SimpleBot:
         db: Database,
         symbol: str = "BTC/USDT",
         sma_window: int = 200,
+        entry_buffer_pct: float = 0.01,
+        exit_buffer_pct: float = 0.01,
     ):
         self.exchange = exchange
         self.db = db
         self.symbol = symbol
         self.sma_window = sma_window
+        self.entry_buffer_pct = entry_buffer_pct
+        self.exit_buffer_pct = exit_buffer_pct
         # `system_status.halt_reason` doubles as our state cache so we can
         # persist current TrendState across restarts without adding a schema.
         # Format: "trend:<state>|enabled:<true|false>|signal_reason:<...>"
@@ -80,7 +84,12 @@ class SimpleBot:
 
     async def evaluate(self) -> TrendSignal:
         closes = await self._fetch_daily_closes()
-        signal = evaluate_trend(closes, self.sma_window)
+        signal = evaluate_trend(
+            closes,
+            sma_window=self.sma_window,
+            entry_buffer_pct=self.entry_buffer_pct,
+            exit_buffer_pct=self.exit_buffer_pct,
+        )
         self._last_signal = signal
         self._last_evaluated = datetime.now(UTC)
         return signal

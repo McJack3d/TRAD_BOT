@@ -33,8 +33,8 @@ class TrendSignal:
 def evaluate_trend(
     daily_closes: pd.Series,
     sma_window: int = 200,
-    entry_buffer_pct: float = 0.0,
-    exit_buffer_pct: float = 0.0,
+    entry_buffer_pct: float = 0.01,
+    exit_buffer_pct: float = 0.01,
 ) -> TrendSignal:
     """Return the trend state for the most recent close in `daily_closes`.
 

@@ -38,6 +38,8 @@ DB_PATH = os.environ.get("SIMPLE_BOT_DB", "data/simple_bot.db")
 LIVE = os.environ.get("SIMPLE_BOT_LIVE", "false").lower() == "true"
 STARTING_USDT = Decimal(os.environ.get("SIMPLE_BOT_STARTING_USDT", "1000"))
 SMA_WINDOW = int(os.environ.get("SIMPLE_BOT_SMA_WINDOW", "200"))
+ENTRY_BUFFER = float(os.environ.get("SIMPLE_BOT_ENTRY_BUFFER", "0.01"))
+EXIT_BUFFER = float(os.environ.get("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 
 
@@ -92,7 +94,14 @@ def _resources():
                 "still load, but prices and signals won't update until "
                 "connectivity is restored."
             )
-    bot = SimpleBot(exchange=ex, db=db, symbol=SYMBOL, sma_window=SMA_WINDOW)
+    bot = SimpleBot(
+        exchange=ex,
+        db=db,
+        symbol=SYMBOL,
+        sma_window=SMA_WINDOW,
+        entry_buffer_pct=ENTRY_BUFFER,
+        exit_buffer_pct=EXIT_BUFFER,
+    )
     return bot, ex, db
 
 
