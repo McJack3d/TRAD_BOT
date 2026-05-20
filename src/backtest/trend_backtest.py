@@ -32,25 +32,81 @@ def backtest_sma_trend(
     slippage_bps: Decimal = Decimal("2.0"),
     entry_buffer_pct: float = 0.0,
     exit_buffer_pct: float = 0.0,
+    trailing_stop_pct: float = 0.0,
 ) -> TrendBacktestResult:
     """Run the SMA trend strategy on a series of daily closes.
 
     `daily_closes` is a DatetimeIndex-keyed Series of float closes.
     Returns equity-curve DataFrame + trade list + summary numbers.
+
+    `trailing_stop_pct` (default 0 = off) sets a peak-to-current trailing
+    stop. When in a position, we track the highest close since entry; if
+    today's close drops by more than `trailing_stop_pct` from that peak,
+    we force-exit even if the SMA signal still says IN. Re-entry requires
+    a fresh IN signal — this avoids ping-ponging on a single drawdown.
     """
     cost_bps = fee_bps + slippage_bps
     equity = initial_equity
     btc = Decimal("0")
     position = TrendState.OUT
+    peak_since_entry: Decimal | None = None
+    stopped_out_cooldown = False  # set after a trailing-stop sell
     rows: list[dict] = []
     trades: list[dict] = []
     initial_close = Decimal(str(daily_closes.iloc[0]))
+
+    def _enter(close: Decimal, ts) -> None:
+        nonlocal equity, btc, position, peak_since_entry
+        spend = equity * (Decimal("1") - cost_bps / Decimal("10000"))
+        btc_acquired = spend / close
+        trades.append(
+            {
+                "ts": ts,
+                "side": "buy",
+                "price": float(close),
+                "qty": float(btc_acquired),
+                "equity_before": float(equity),
+            }
+        )
+        btc = btc_acquired
+        equity = Decimal("0")
+        position = TrendState.IN
+        peak_since_entry = close
+
+    def _exit(close: Decimal, ts, reason: str = "signal") -> None:
+        nonlocal equity, btc, position, peak_since_entry
+        proceeds = btc * close * (Decimal("1") - cost_bps / Decimal("10000"))
+        trades.append(
+            {
+                "ts": ts,
+                "side": "sell",
+                "price": float(close),
+                "qty": float(btc),
+                "equity_after": float(proceeds),
+                "reason": reason,
+            }
+        )
+        equity = proceeds
+        btc = Decimal("0")
+        position = TrendState.OUT
+        peak_since_entry = None
 
     for i in range(len(daily_closes)):
         ts = daily_closes.index[i]
         close = Decimal(str(daily_closes.iloc[i]))
 
-        # Need at least sma_window history to evaluate.
+        # Track peak for trailing stop and check stop condition first.
+        if position == TrendState.IN:
+            assert peak_since_entry is not None
+            if close > peak_since_entry:
+                peak_since_entry = close
+            if trailing_stop_pct > 0:
+                trigger = peak_since_entry * (Decimal("1") - Decimal(str(trailing_stop_pct)))
+                if close <= trigger:
+                    _exit(close, ts, reason="trailing_stop")
+                    stopped_out_cooldown = True
+
+        # SMA signal evaluation (with hysteresis).
         if i + 1 >= sma_window:
             window_closes = daily_closes.iloc[: i + 1]
             signal = evaluate_trend(
@@ -59,37 +115,16 @@ def backtest_sma_trend(
                 entry_buffer_pct=entry_buffer_pct,
                 exit_buffer_pct=exit_buffer_pct,
             )
-            if signal.state != position:
+            # Cooldown: after a trailing stop, we wait for OUT to clear
+            # before considering re-entry. This prevents re-buying on the
+            # same drawdown bar.
+            if stopped_out_cooldown and signal.state == TrendState.OUT:
+                stopped_out_cooldown = False
+            if signal.state != position and not stopped_out_cooldown:
                 if signal.state == TrendState.IN:
-                    # Buy BTC with all USDT.
-                    spend = equity * (Decimal("1") - cost_bps / Decimal("10000"))
-                    btc_acquired = spend / close
-                    trades.append(
-                        {
-                            "ts": ts,
-                            "side": "buy",
-                            "price": float(close),
-                            "qty": float(btc_acquired),
-                            "equity_before": float(equity),
-                        }
-                    )
-                    btc = btc_acquired
-                    equity = Decimal("0")
+                    _enter(close, ts)
                 else:
-                    # Sell all BTC to USDT.
-                    proceeds = btc * close * (Decimal("1") - cost_bps / Decimal("10000"))
-                    trades.append(
-                        {
-                            "ts": ts,
-                            "side": "sell",
-                            "price": float(close),
-                            "qty": float(btc),
-                            "equity_after": float(proceeds),
-                        }
-                    )
-                    equity = proceeds
-                    btc = Decimal("0")
-                position = signal.state
+                    _exit(close, ts, reason="signal")
 
         mark_to_market = equity + btc * close
         buy_and_hold = initial_equity * (close / initial_close)

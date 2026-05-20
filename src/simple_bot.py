@@ -53,6 +53,7 @@ class SimpleBot:
         sma_window: int = 200,
         entry_buffer_pct: float = 0.01,
         exit_buffer_pct: float = 0.01,
+        trailing_stop_pct: float = 0.15,
     ):
         self.exchange = exchange
         self.db = db
@@ -60,6 +61,7 @@ class SimpleBot:
         self.sma_window = sma_window
         self.entry_buffer_pct = entry_buffer_pct
         self.exit_buffer_pct = exit_buffer_pct
+        self.trailing_stop_pct = trailing_stop_pct
         # `system_status.halt_reason` doubles as our state cache so we can
         # persist current TrendState across restarts without adding a schema.
         # Format: "trend:<state>|enabled:<true|false>|signal_reason:<...>"
@@ -95,21 +97,96 @@ class SimpleBot:
         return signal
 
     async def tick(self) -> TrendSignal | None:
-        """One evaluation cycle. If enabled and signal differs from holdings,
-        rebalance. Returns the signal, or None if disabled / data missing."""
+        """One evaluation cycle. If enabled, evaluate the signal, check the
+        trailing-stop guard, and rebalance if needed.
+
+        Order of operations matters:
+          1. Trailing stop first — if we're IN and current price is too far
+             below the post-entry peak, force-exit regardless of the SMA
+             signal. Sets a one-tick cooldown so we don't immediately re-buy.
+          2. Then evaluate the SMA signal. If signal differs from current
+             position (and we're not in cooldown), rebalance.
+        """
         if not await self.is_enabled():
             log.info("simple_bot.tick.disabled")
             return None
-        signal = await self.evaluate()
+
         current = await self.current_state()
+        meta = await self._get_meta()
+        peak = Decimal(meta.get("peak_since_entry", "0") or "0")
+        cooldown = meta.get("stop_cooldown") == "true"
+
+        # Get fresh price for stop check + signal eval.
+        try:
+            ticker = await self.exchange.fetch_ticker(self.symbol, "spot")
+            current_price = ticker.last or (ticker.bid + ticker.ask) / 2
+        except Exception as e:
+            log.warning("simple_bot.tick.no_price", error=str(e))
+            current_price = Decimal("0")
+
+        # Trailing stop check.
+        if (
+            current == TrendState.IN
+            and self.trailing_stop_pct > 0
+            and current_price > 0
+            and peak > 0
+        ):
+            new_peak = max(peak, current_price)
+            if new_peak != peak:
+                await self._set_meta(peak_since_entry=str(new_peak))
+                peak = new_peak
+            trigger = peak * (Decimal("1") - Decimal(str(self.trailing_stop_pct)))
+            if current_price <= trigger:
+                log.warning(
+                    "simple_bot.tick.trailing_stop",
+                    peak=str(peak),
+                    current=str(current_price),
+                    trigger=str(trigger),
+                )
+                await go_out(self.exchange, self.db, symbol=self.symbol)
+                await self._set_meta(
+                    current_state=TrendState.OUT.value,
+                    peak_since_entry="0",
+                    stop_cooldown="true",
+                )
+                # Synthesize a "stop" signal for reporting.
+                from src.strategy.sma_trend import TrendSignal as _TS
+                return _TS(
+                    state=TrendState.OUT,
+                    close=current_price,
+                    sma=Decimal("0"),
+                    reason=f"trailing stop hit: peak {peak} → current {current_price}",
+                )
+
+        signal = await self.evaluate()
+
+        # Clear cooldown once signal goes OUT (or stays OUT) — we only re-enter
+        # after a fresh fully-fledged IN signal.
+        if cooldown and signal.state == TrendState.OUT:
+            await self._set_meta(stop_cooldown="false")
+            cooldown = False
+
         if signal.state == current:
             log.info("simple_bot.tick.no_change", state=current.value)
             return signal
+        if cooldown:
+            log.info("simple_bot.tick.in_cooldown")
+            return signal
+
         if signal.state == TrendState.IN:
             await go_in(self.exchange, self.db, symbol=self.symbol)
+            # Track entry peak for trailing stop.
+            entry_price = current_price if current_price > 0 else signal.close
+            await self._set_meta(
+                current_state=TrendState.IN.value,
+                peak_since_entry=str(entry_price),
+                stop_cooldown="false",
+            )
         else:
             await go_out(self.exchange, self.db, symbol=self.symbol)
-        await self._set_meta(current_state=signal.state.value)
+            await self._set_meta(
+                current_state=TrendState.OUT.value, peak_since_entry="0"
+            )
         log.info(
             "simple_bot.tick.flipped",
             from_=current.value,
@@ -195,6 +272,26 @@ class SimpleBot:
             raise RuntimeError(
                 "exchange has no .spot ccxt client and no closes_override is set"
             )
-        ohlcv = await ccxt_spot.fetch_ohlcv(self.symbol, "1d", limit=self.sma_window + 5)
-        closes = [float(c[4]) for c in ohlcv]
-        return pd.Series(closes)
+        # Retry with exponential backoff on transient Binance unavailability
+        # (HTTP 5xx, network blip, Cloudflare hiccup). Hard-fail after 3 tries.
+        import asyncio as _asyncio
+
+        last_exc: Exception | None = None
+        for attempt in range(3):
+            try:
+                ohlcv = await ccxt_spot.fetch_ohlcv(
+                    self.symbol, "1d", limit=self.sma_window + 5
+                )
+                closes = [float(c[4]) for c in ohlcv]
+                return pd.Series(closes)
+            except Exception as e:
+                last_exc = e
+                log.warning(
+                    "simple_bot.fetch_ohlcv.retry",
+                    attempt=attempt + 1,
+                    symbol=self.symbol,
+                    error=str(e),
+                )
+                await _asyncio.sleep(1.5**attempt)
+        assert last_exc is not None
+        raise last_exc

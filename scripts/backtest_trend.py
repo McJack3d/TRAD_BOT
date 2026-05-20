@@ -104,6 +104,7 @@ def _run(
     symbols: list[str],
     entry_buffer: float,
     exit_buffer: float,
+    trailing_stop: float,
 ) -> None:
     configure_logging("WARNING")
     console = Console()
@@ -126,6 +127,7 @@ def _run(
             slippage_bps=Decimal(str(slip_bps)),
             entry_buffer_pct=entry_buffer,
             exit_buffer_pct=exit_buffer,
+            trailing_stop_pct=trailing_stop,
         )
         stats = summarize(result)
         title = f"SMA-{sma} trend follower on {sym}"
@@ -191,6 +193,12 @@ def main() -> None:
         default=0.01,
         help="Require close < SMA * (1 - buffer) to exit. Default 0.01 (1%%).",
     )
+    parser.add_argument(
+        "--trailing-stop",
+        type=float,
+        default=0.15,
+        help="Trailing stop loss as a fraction (e.g. 0.15 = 15%%). 0 = off.",
+    )
     args = parser.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     _run(
@@ -199,6 +207,7 @@ def main() -> None:
         equity=args.equity,
         fee_bps=args.fee_bps,
         slip_bps=args.slip_bps,
+        trailing_stop=args.trailing_stop,
         symbols=symbols,
         entry_buffer=args.entry_buffer,
         exit_buffer=args.exit_buffer,

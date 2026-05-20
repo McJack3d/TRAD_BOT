@@ -17,13 +17,32 @@ Three complementary ways to evaluate the bot before risking real money:
 ```bash
 source .venv/bin/activate
 
-# Default: 5 years, SMA-50, $1000 starting equity.
+# Default: 5 years, SMA-200, 1% buffer, 15% trailing stop, $1000.
 python -m scripts.backtest_trend
 
-# Compare windows / parameters:
-python -m scripts.backtest_trend --years 3 --sma 30
-python -m scripts.backtest_trend --years 7 --sma 100
+# Override any parameter:
+python -m scripts.backtest_trend --years 7 --sma 100 --trailing-stop 0.20
+
+# Skip the trailing stop:
+python -m scripts.backtest_trend --trailing-stop 0
 ```
+
+### Full validation suite (recommended before going live)
+
+```bash
+python -m scripts.validate_trend
+```
+
+Runs four checks back-to-back:
+1. In-sample full-window backtest with rich metrics (Sharpe / Sortino /
+   Calmar / Ulcer Index, beyond just APR + drawdown).
+2. Out-of-sample split: tunes nothing on the last 30% of data and
+   reports the honest forward-looking number on that held-out window.
+3. Walk-forward: rolling 2-year train / 6-month test windows. Tunes
+   `(sma_window, buffer)` on each train window via grid search, reports
+   the test-window result. Strategy is robust iff most test Sharpes > 0.
+4. Per-asset generalization: same params on BTC, ETH, SOL individually.
+   The rule shouldn't only work on the asset you tuned on.
 
 You get a table comparing the strategy to buy-and-hold:
 

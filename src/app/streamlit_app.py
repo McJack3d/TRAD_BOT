@@ -40,6 +40,7 @@ STARTING_USDT = Decimal(os.environ.get("SIMPLE_BOT_STARTING_USDT", "1000"))
 SMA_WINDOW = int(os.environ.get("SIMPLE_BOT_SMA_WINDOW", "200"))
 ENTRY_BUFFER = float(os.environ.get("SIMPLE_BOT_ENTRY_BUFFER", "0.01"))
 EXIT_BUFFER = float(os.environ.get("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
+TRAILING_STOP = float(os.environ.get("SIMPLE_BOT_TRAILING_STOP", "0.15"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 
 
@@ -101,6 +102,7 @@ def _resources():
         sma_window=SMA_WINDOW,
         entry_buffer_pct=ENTRY_BUFFER,
         exit_buffer_pct=EXIT_BUFFER,
+        trailing_stop_pct=TRAILING_STOP,
     )
     return bot, ex, db
 
@@ -139,9 +141,17 @@ async def _load_equity_history(db: Database) -> pd.DataFrame:
 def _fetch_status(bot: SimpleBot):
     """Hit Binance for fresh status. Cached in session_state."""
     with st.spinner("Fetching price + balances from Binance..."):
-        status = _run(bot.status())
+        try:
+            status = _run(bot.status())
+        except Exception as e:
+            st.warning(
+                f"Couldn't reach Binance to refresh status ({e}). "
+                "Showing last cached status if available."
+            )
+            return st.session_state.get("status")
     st.session_state["status"] = status
     st.session_state["status_age"] = pd.Timestamp.now(tz="UTC")
+    return status
     return status
 
 
@@ -165,6 +175,12 @@ def main() -> None:
         status = _fetch_status(bot)
     else:
         status = st.session_state["status"]
+    if status is None:
+        st.info(
+            "Couldn't fetch status from Binance. The page will work once "
+            "connectivity recovers — click *Refresh price* to retry."
+        )
+        return
 
     # Top row: status metrics.
     c1, c2, c3, c4 = st.columns(4)
@@ -194,23 +210,41 @@ def main() -> None:
         st.rerun()
     if b3.button("🔄 Evaluate now", use_container_width=True):
         with st.spinner("Fetching daily closes + evaluating signal..."):
-            sig = _run(bot.tick())
+            try:
+                sig = _run(bot.tick())
+            except Exception as e:
+                st.error(
+                    f"Couldn't reach Binance to evaluate the signal: {e}. "
+                    "This is usually a transient outage or a geo-block — "
+                    "try again in a minute, or check that your network can "
+                    "reach api.binance.com."
+                )
+                sig = "ERR"
         if sig is None:
             st.warning("Bot is disabled — click Start trading first.")
-        else:
-            _run(_snapshot_equity(db, bot))
+        elif sig != "ERR":
+            try:
+                _run(_snapshot_equity(db, bot))
+            except Exception as e:
+                st.warning(f"Trade executed but couldn't snapshot equity: {e}")
             st.success(f"Signal: {sig.state.value.upper()} — {sig.reason}")
-        _fetch_status(bot)
-        st.rerun()
+            _fetch_status(bot)
+            st.rerun()
     if b4.button("💵 Flatten to USDT", use_container_width=True):
         with st.spinner("Selling BTC to USDT..."):
-            _run(bot.flatten_now())
-            _run(_snapshot_equity(db, bot))
+            try:
+                _run(bot.flatten_now())
+                _run(_snapshot_equity(db, bot))
+            except Exception as e:
+                st.error(f"Flatten failed: {e}")
+                st.stop()
         _fetch_status(bot)
         st.rerun()
     if b5.button("⟳ Refresh price", use_container_width=True):
-        _fetch_status(bot)
-        st.rerun()
+        try:
+            _fetch_status(bot)
+        except Exception as e:
+            st.error(f"Couldn't refresh price: {e}")
         st.rerun()
 
     # Last signal info.
