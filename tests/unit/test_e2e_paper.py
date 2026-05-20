@@ -25,13 +25,13 @@ from src.config import (
     StrategyConfig,
     SymbolConfig,
 )
-from src.data import MarketData
+from src.data.market_data import MarketData
 from src.execution.engine import ExecutionEngine
-from src.reconciliation import Reconciler
-from src.risk import RiskManager
-from src.state import Database
+from src.reconciliation.reconciler import Reconciler
+from src.risk.manager import RiskManager
+from src.state.db import Database
 from src.state.models import PositionStatus, SystemStatusEnum
-from src.strategy import FundingArbStrategy
+from src.strategy.funding_arb import FundingArbStrategy
 
 
 @pytest.fixture

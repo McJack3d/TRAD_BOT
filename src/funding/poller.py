@@ -14,9 +14,9 @@ from datetime import UTC, datetime, timedelta
 
 from src.adapters.exchange_base import ExchangeAdapter
 from src.config import SymbolConfig
-from src.data import MarketData
+from src.data.market_data import MarketData
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import FundingPayment
 
 

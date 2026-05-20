@@ -20,7 +20,7 @@ from src.adapters.exchange_base import ExchangeAdapter, ExchangePosition
 from src.config import RiskConfig
 from src.logging_setup import log
 from src.risk.checks import PreTradeContext, run_pre_trade_checks
-from src.state import Database
+from src.state.db import Database
 from src.state.models import SystemStatusEnum
 
 FlattenCallback = Callable[[str], Awaitable[None]]

@@ -16,7 +16,7 @@ from sqlalchemy import select
 from src.config import BotConfig
 from src.logging_setup import log
 from src.monitoring.email import EmailNotifier
-from src.state import Database
+from src.state.db import Database
 from src.state.models import FundingPayment, Position, PositionStatus, StateSnapshot
 
 

@@ -28,7 +28,7 @@ from sqlalchemy import select, update
 from src.adapters.exchange_base import ExchangeAdapter
 from src.execution.spot_only import go_in, go_out
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import SystemStatus
 from src.strategy.sma_trend import TrendSignal, TrendState, evaluate_trend
 

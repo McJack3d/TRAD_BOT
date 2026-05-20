@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from src.config import Secrets
 from src.logging_setup import configure_logging, log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import Fill, FundingPayment, Order
 
 PARIS = ZoneInfo("Europe/Paris")

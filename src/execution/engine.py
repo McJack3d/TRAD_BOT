@@ -17,7 +17,7 @@ from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder, Leg, Side
 from src.config import BotConfig, Mode, SymbolConfig
 from src.execution.order import generate_client_order_id, round_qty
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import (
     Fill,
     Order,

@@ -10,9 +10,9 @@ import pytest
 
 from src.adapters.fake import FakeExchange
 from src.config import SymbolConfig
-from src.data import MarketData
-from src.funding import FundingPoller
-from src.state import Database
+from src.data.market_data import MarketData
+from src.funding.poller import FundingPoller
+from src.state.db import Database
 from src.state.models import FundingPayment, Position, PositionStatus
 
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import SystemStatusEnum
 
 FlattenCallback = Callable[[str], Awaitable[None]]

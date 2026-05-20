@@ -16,7 +16,7 @@ from decimal import Decimal
 from src.adapters.exchange_base import ExchangeAdapter
 from src.config import ReconciliationConfig
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import SystemStatusEnum
 
 NotifyCallback = Callable[[str, str], Awaitable[None]]

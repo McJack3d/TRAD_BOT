@@ -22,7 +22,7 @@ import pandas as pd
 import streamlit as st
 
 from src.simple_bot import SimpleBot
-from src.state import Database
+from src.state.db import Database
 from src.state.models import StateSnapshot
 
 DB_PATH = os.environ.get("SIMPLE_BOT_DB", "data/simple_bot.db")

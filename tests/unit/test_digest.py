@@ -11,7 +11,7 @@ import pytest
 from src.config import BotConfig, Mode, SymbolConfig
 from src.monitoring.digest import DigestScheduler
 from src.monitoring.email import EmailNotifier
-from src.state import Database
+from src.state.db import Database
 from src.state.models import FundingPayment, Position, PositionStatus, StateSnapshot
 
 

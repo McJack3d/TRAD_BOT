@@ -12,18 +12,20 @@ from pathlib import Path
 
 from src.adapters.binance import BinanceAdapter
 from src.config import BotConfig, Mode, Secrets
-from src.data import MarketData
+from src.data.market_data import MarketData
 from src.data.binance_ws import BinanceWebSocket
 from src.execution.engine import ExecutionEngine
-from src.funding import FundingPoller
+from src.funding.poller import FundingPoller
 from src.killswitch import KillSwitch
 from src.logging_setup import configure_logging, log
-from src.monitoring import DigestScheduler, EmailNotifier, TelegramNotifier
-from src.reconciliation import Reconciler
-from src.risk import RiskManager
-from src.state import Database
+from src.monitoring.digest import DigestScheduler
+from src.monitoring.email import EmailNotifier
+from src.monitoring.telegram_bot import TelegramNotifier
+from src.reconciliation.reconciler import Reconciler
+from src.risk.manager import RiskManager
+from src.state.db import Database
 from src.state.models import StateSnapshot
-from src.strategy import FundingArbStrategy
+from src.strategy.funding_arb import FundingArbStrategy
 
 
 async def run(config_path: str, kill_file: str) -> None:

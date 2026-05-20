@@ -17,7 +17,7 @@ from src.config import (
     StrategyConfig,
     SymbolConfig,
 )
-from src.state import Database
+from src.state.db import Database
 
 
 @pytest.fixture

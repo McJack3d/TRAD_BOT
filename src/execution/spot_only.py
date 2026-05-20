@@ -14,7 +14,7 @@ from decimal import Decimal
 from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder
 from src.execution.order import generate_client_order_id, round_qty
 from src.logging_setup import log
-from src.state import Database
+from src.state.db import Database
 from src.state.models import Fill, Leg, Order, OrderStatus, Side
 
 # Keep a small buffer so the order never tries to spend more than we have

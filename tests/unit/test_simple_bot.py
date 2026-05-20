@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.adapters.fake import FakeExchange
 from src.simple_bot import SimpleBot
-from src.state import Database
+from src.state.db import Database
 from src.strategy.sma_trend import TrendState
 
 
