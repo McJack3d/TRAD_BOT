@@ -28,7 +28,7 @@ from src.state.models import StateSnapshot
 DB_PATH = os.environ.get("SIMPLE_BOT_DB", "data/simple_bot.db")
 LIVE = os.environ.get("SIMPLE_BOT_LIVE", "false").lower() == "true"
 STARTING_USDT = Decimal(os.environ.get("SIMPLE_BOT_STARTING_USDT", "1000"))
-SMA_WINDOW = int(os.environ.get("SIMPLE_BOT_SMA_WINDOW", "50"))
+SMA_WINDOW = int(os.environ.get("SIMPLE_BOT_SMA_WINDOW", "200"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 
 

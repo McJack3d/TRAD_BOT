@@ -50,7 +50,7 @@ class SimpleBot:
         exchange: ExchangeAdapter,
         db: Database,
         symbol: str = "BTC/USDT",
-        sma_window: int = 50,
+        sma_window: int = 200,
     ):
         self.exchange = exchange
         self.db = db

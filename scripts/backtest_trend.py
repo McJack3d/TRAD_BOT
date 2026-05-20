@@ -103,7 +103,7 @@ def _run(years: int, sma: int, equity: float, fee_bps: float, slip_bps: float) -
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest SMA trend follower on BTC")
     parser.add_argument("--years", type=int, default=5)
-    parser.add_argument("--sma", type=int, default=50)
+    parser.add_argument("--sma", type=int, default=200)
     parser.add_argument("--equity", type=float, default=1000)
     parser.add_argument("--fee-bps", type=float, default=4.0)
     parser.add_argument("--slip-bps", type=float, default=2.0)

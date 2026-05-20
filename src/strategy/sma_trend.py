@@ -30,7 +30,7 @@ class TrendSignal:
     reason: str
 
 
-def evaluate_trend(daily_closes: pd.Series, sma_window: int = 50) -> TrendSignal:
+def evaluate_trend(daily_closes: pd.Series, sma_window: int = 200) -> TrendSignal:
     """Return the trend state for the most recent close in `daily_closes`.
 
     `daily_closes` is most-recent-last. If fewer than `sma_window` bars
