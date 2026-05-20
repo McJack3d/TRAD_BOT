@@ -1,9 +1,8 @@
-"""Backtest the SMA trend-following strategy on real BTC history.
+"""Backtest the SMA trend-following strategy on real history.
 
-Single-asset, spot-only. For each daily close, compute the signal;
-if it differs from the current position, flip with a configurable
-fee + slippage cost. Reports the strategy's equity curve alongside
-a buy-and-hold benchmark.
+Single-asset (`backtest_sma_trend`) and multi-asset basket
+(`backtest_basket`) variants. Each asset has its own signal; the basket
+equal-weights capital across assets that are IN at any moment.
 """
 
 from __future__ import annotations
@@ -28,9 +27,11 @@ class TrendBacktestResult:
 def backtest_sma_trend(
     daily_closes: pd.Series,
     initial_equity: Decimal = Decimal("1000"),
-    sma_window: int = 50,
+    sma_window: int = 200,
     fee_bps: Decimal = Decimal("4.0"),
     slippage_bps: Decimal = Decimal("2.0"),
+    entry_buffer_pct: float = 0.0,
+    exit_buffer_pct: float = 0.0,
 ) -> TrendBacktestResult:
     """Run the SMA trend strategy on a series of daily closes.
 
@@ -52,7 +53,12 @@ def backtest_sma_trend(
         # Need at least sma_window history to evaluate.
         if i + 1 >= sma_window:
             window_closes = daily_closes.iloc[: i + 1]
-            signal = evaluate_trend(window_closes, sma_window=sma_window)
+            signal = evaluate_trend(
+                window_closes,
+                sma_window=sma_window,
+                entry_buffer_pct=entry_buffer_pct,
+                exit_buffer_pct=exit_buffer_pct,
+            )
             if signal.state != position:
                 if signal.state == TrendState.IN:
                     # Buy BTC with all USDT.
@@ -138,3 +144,108 @@ def summarize(result: TrendBacktestResult) -> dict:
         "strategy_max_dd": _max_dd(strat),
         "buy_and_hold_max_dd": _max_dd(bh),
     }
+
+
+def backtest_basket(
+    closes_by_symbol: dict[str, pd.Series],
+    initial_equity: Decimal = Decimal("1000"),
+    sma_window: int = 200,
+    fee_bps: Decimal = Decimal("4.0"),
+    slippage_bps: Decimal = Decimal("2.0"),
+    entry_buffer_pct: float = 0.0,
+    exit_buffer_pct: float = 0.0,
+) -> TrendBacktestResult:
+    """Equal-weight basket backtest.
+
+    Each symbol runs its own SMA-trend signal. Capital is split into
+    n_symbols equal slots; a slot is invested when its symbol's signal
+    is IN, and held as USDT otherwise.
+
+    Index alignment: closes are reindexed onto the union of all
+    timestamps and forward-filled, so a missing day for one symbol uses
+    the previous close.
+
+    Buy-and-hold benchmark = equal-weight buy of all symbols on day 0
+    with rebalancing only at the end (no intermediate rebalances).
+    """
+    if not closes_by_symbol:
+        return TrendBacktestResult(
+            equity_curve=pd.DataFrame(columns=["ts", "strategy_equity", "buy_and_hold_equity"]),
+            initial_equity=initial_equity,
+            final_equity=initial_equity,
+            final_buy_and_hold=initial_equity,
+        )
+
+    cost_bps = fee_bps + slippage_bps
+    cost_factor = Decimal("1") - cost_bps / Decimal("10000")
+    n = len(closes_by_symbol)
+    slot_equity = initial_equity / Decimal(n)
+
+    # Align all series on a union DatetimeIndex.
+    idx = sorted(set().union(*(s.index for s in closes_by_symbol.values())))
+    aligned = {
+        sym: s.reindex(idx).ffill() for sym, s in closes_by_symbol.items()
+    }
+    symbols = list(closes_by_symbol.keys())
+
+    cash = {sym: slot_equity for sym in symbols}
+    holdings = {sym: Decimal("0") for sym in symbols}
+    position = {sym: TrendState.OUT for sym in symbols}
+    initial_close = {sym: Decimal(str(aligned[sym].iloc[0])) for sym in symbols}
+
+    trades: list[dict] = []
+    rows: list[dict] = []
+
+    for i, ts in enumerate(idx):
+        for sym in symbols:
+            close = Decimal(str(aligned[sym].iloc[i]))
+            if i + 1 >= sma_window:
+                window = aligned[sym].iloc[: i + 1]
+                signal = evaluate_trend(
+                    window,
+                    sma_window=sma_window,
+                    entry_buffer_pct=entry_buffer_pct,
+                    exit_buffer_pct=exit_buffer_pct,
+                )
+                if signal.state != position[sym]:
+                    if signal.state == TrendState.IN:
+                        spend = cash[sym] * cost_factor
+                        qty = spend / close
+                        trades.append(
+                            {"ts": ts, "symbol": sym, "side": "buy", "price": float(close), "qty": float(qty)}
+                        )
+                        holdings[sym] = qty
+                        cash[sym] = Decimal("0")
+                    else:
+                        proceeds = holdings[sym] * close * cost_factor
+                        trades.append(
+                            {"ts": ts, "symbol": sym, "side": "sell", "price": float(close), "qty": float(holdings[sym])}
+                        )
+                        cash[sym] = proceeds
+                        holdings[sym] = Decimal("0")
+                    position[sym] = signal.state
+
+        strategy_equity = sum(
+            cash[sym] + holdings[sym] * Decimal(str(aligned[sym].iloc[i])) for sym in symbols
+        )
+        buy_and_hold = sum(
+            slot_equity * Decimal(str(aligned[sym].iloc[i])) / initial_close[sym] for sym in symbols
+        )
+        rows.append(
+            {
+                "ts": ts,
+                "strategy_equity": float(strategy_equity),
+                "buy_and_hold_equity": float(buy_and_hold),
+            }
+        )
+
+    curve = pd.DataFrame(rows)
+    final_eq = Decimal(str(curve["strategy_equity"].iloc[-1])) if not curve.empty else initial_equity
+    final_bh = Decimal(str(curve["buy_and_hold_equity"].iloc[-1])) if not curve.empty else initial_equity
+    return TrendBacktestResult(
+        equity_curve=curve,
+        trades=trades,
+        initial_equity=initial_equity,
+        final_equity=final_eq,
+        final_buy_and_hold=final_bh,
+    )

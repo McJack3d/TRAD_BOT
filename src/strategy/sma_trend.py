@@ -30,12 +30,24 @@ class TrendSignal:
     reason: str
 
 
-def evaluate_trend(daily_closes: pd.Series, sma_window: int = 200) -> TrendSignal:
+def evaluate_trend(
+    daily_closes: pd.Series,
+    sma_window: int = 200,
+    entry_buffer_pct: float = 0.0,
+    exit_buffer_pct: float = 0.0,
+) -> TrendSignal:
     """Return the trend state for the most recent close in `daily_closes`.
 
     `daily_closes` is most-recent-last. If fewer than `sma_window` bars
     are available, return OUT — the SMA isn't defined yet so we stay in
     cash rather than guess.
+
+    `entry_buffer_pct` (default 0) requires `close > SMA * (1 + buffer)`
+    to enter. A 0.01 buffer (1%) filters whipsaws where price barely
+    crosses the SMA. `exit_buffer_pct` (also default 0) does the
+    symmetric thing on the way out: `close < SMA * (1 - buffer)`
+    triggers exit. Together they create a dead-band around the SMA so
+    the strategy only trades on convincing crossings.
     """
     if len(daily_closes) < sma_window:
         return TrendSignal(
@@ -46,16 +58,21 @@ def evaluate_trend(daily_closes: pd.Series, sma_window: int = 200) -> TrendSigna
         )
     sma = float(daily_closes.rolling(sma_window).mean().iloc[-1])
     last = float(daily_closes.iloc[-1])
-    if last > sma:
+    entry_threshold = sma * (1 + entry_buffer_pct)
+    exit_threshold = sma * (1 - exit_buffer_pct)
+    if last > entry_threshold:
         return TrendSignal(
             state=TrendState.IN,
             close=Decimal(str(last)),
             sma=Decimal(str(sma)),
-            reason=f"close {last:.2f} > SMA{sma_window} {sma:.2f}",
+            reason=f"close {last:.2f} > SMA{sma_window}*{1+entry_buffer_pct:.3f} ({entry_threshold:.2f})",
         )
+    # Below the exit threshold OR inside the dead band → OUT. Cash is the
+    # safe default when the signal is ambiguous; this is the whole point of
+    # the buffers (filter marginal crossings).
     return TrendSignal(
         state=TrendState.OUT,
         close=Decimal(str(last)),
         sma=Decimal(str(sma)),
-        reason=f"close {last:.2f} <= SMA{sma_window} {sma:.2f}",
+        reason=f"close {last:.2f} <= entry threshold ({entry_threshold:.2f})",
     )
