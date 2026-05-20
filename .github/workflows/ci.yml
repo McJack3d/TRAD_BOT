@@ -32,7 +32,7 @@ jobs:
       - name: Detect secrets
         run: |
           pip install detect-secrets
-          detect-secrets scan --baseline .secrets.baseline || true
+          detect-secrets scan --baseline .secrets.baseline
 
   build-paper-run:
     runs-on: ubuntu-latest

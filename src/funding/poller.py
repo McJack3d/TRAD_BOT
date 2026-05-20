@@ -10,7 +10,7 @@ Runs as an asyncio task driven every `interval_seconds` (default 5min).
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from src.adapters.exchange_base import ExchangeAdapter
 from src.config import SymbolConfig
@@ -75,7 +75,7 @@ class FundingPoller:
             if snap is None or snap.next_funding_time is None:
                 continue
             # Funding settled when wall clock has passed the previous "next" time.
-            settled_at = snap.next_funding_time - _eight_hours()
+            settled_at = snap.next_funding_time - timedelta(hours=8)
             if settled_at > datetime.now(UTC):
                 continue
             notional = abs(pos.perp_qty) * snap.mark_price
@@ -99,7 +99,3 @@ class FundingPoller:
                 )
 
 
-def _eight_hours() -> datetime.timedelta:
-    from datetime import timedelta
-
-    return timedelta(hours=8)
