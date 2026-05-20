@@ -56,6 +56,8 @@ cp .env.example .env  # fill in
 
 ## Run modes
 
+### Daemon — funding-rate arbitrage (24/7 on a VPS)
+
 ```bash
 # Backtest
 python -m scripts.run_backtest --config config/backtest.yaml
@@ -66,6 +68,30 @@ python -m scripts.run_dry_run --config config/paper.yaml
 # Live (only after acceptance gates pass)
 BOT_ENV=live python -m src.main --config config/live.yaml
 ```
+
+### Laptop bot — BTC SMA trend follower (run when laptop is on)
+
+Paper mode (no keys needed):
+
+```bash
+streamlit run src/app/streamlit_app.py
+# → opens http://localhost:8501
+# Big buttons: Start trading / Stop trading / Evaluate now / Flatten to USDT
+```
+
+Live mode (real Binance, real money — only with a no-withdrawal IP-whitelisted key):
+
+```bash
+SIMPLE_BOT_LIVE=true \
+BINANCE_API_KEY=... \
+BINANCE_API_SECRET=... \
+streamlit run src/app/streamlit_app.py
+```
+
+Strategy: hold BTC when daily close > 50-day SMA, else hold USDT. Spot
+only, no leverage. Closing the terminal stops the bot. Existing
+positions stay on Binance until you flatten or restart and let the
+signal decide.
 
 ## Tests
 
