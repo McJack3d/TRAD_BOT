@@ -17,22 +17,33 @@ trading **only after** the §15 acceptance gates in the spec are met.
 
 ```
 src/
-  adapters/        Exchange adapter (abstract base + Binance impl via ccxt)
-  data/            Live market data (WS+REST) and historical data loader
+  adapters/        Exchange adapter base + Binance (ccxt) + FakeExchange
+  data/            Live MarketData (Binance WS + REST fallback) + history
   strategy/        Funding-arb signal engine
   risk/            Pre-trade checks + continuous monitoring + kill switch
   execution/       Two-leg order coordination with idempotency
-  state/           SQLite schema and DAOs
+  state/           SQLite schema and DAOs (async via SQLAlchemy)
   reconciliation/  Internal-vs-exchange state diff loop
-  monitoring/      Telegram bot, email digests, dashboard
+  funding/         Funding-payment poller (records to DB)
+  monitoring/      Telegram bot, email, daily/weekly digest, dashboard
   backtest/        Event-driven backtester + walk-forward + metrics
   config.py        Pydantic-validated settings (env + YAML)
+  killswitch.py    /var/lib/bot/KILL file watcher
   main.py          Entry point (asyncio)
 config/            live.yaml / paper.yaml / backtest.yaml
 scripts/           Download history, backtest, dry-run, tax export
-tests/             Unit (incl. adversarial risk-manager) + integration
-deploy/            systemd unit + setup script
+tests/             Unit (incl. adversarial risk-manager, e2e paper)
+deploy/            systemd unit + Ubuntu 24.04 setup script
+.github/           CI workflow
 ```
+
+## Modes
+
+- `backtest` — replays Parquet history through the strategy/risk engines.
+- `paper`    — full pipeline against `FakeExchange` (no real orders).
+- `dry_run`  — production VPS deployment; engine intercepts every order
+               submission and logs instead of sending.
+- `live`     — real money. Only enable after the §15 acceptance gates pass.
 
 ## Install
 

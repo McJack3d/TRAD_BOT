@@ -64,7 +64,11 @@ def evaluate_signal(
         return HoldSignal(symbol=symbol)
 
     # Position is open: respect min dwell, then check exit threshold.
-    dwell = now - position.opened_at
+    # SQLite returns tz-naive datetimes; treat them as UTC.
+    opened = position.opened_at
+    if opened.tzinfo is None:
+        opened = opened.replace(tzinfo=UTC)
+    dwell = now - opened
     if dwell < timedelta(hours=cfg.min_dwell_hours):
         return HoldSignal(symbol=symbol)
     if funding_rate <= cfg.exit_funding_threshold:

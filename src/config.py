@@ -106,7 +106,7 @@ class BotConfig(BaseModel):
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
 
     @classmethod
-    def from_yaml(cls, path: str | Path) -> "BotConfig":
+    def from_yaml(cls, path: str | Path) -> BotConfig:
         with open(path) as f:
             data: dict[str, Any] = yaml.safe_load(f)
         return cls.model_validate(data)

@@ -22,11 +22,11 @@ class CheckResult:
     reason: str = ""
 
     @classmethod
-    def pass_(cls) -> "CheckResult":
+    def pass_(cls) -> CheckResult:
         return cls(ok=True)
 
     @classmethod
-    def fail(cls, reason: str) -> "CheckResult":
+    def fail(cls, reason: str) -> CheckResult:
         return cls(ok=False, reason=reason)
 
 

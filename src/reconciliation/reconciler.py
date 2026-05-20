@@ -36,11 +36,15 @@ class Reconciler:
         exchange: ExchangeAdapter,
         cfg: ReconciliationConfig,
         on_notify: NotifyCallback | None = None,
+        perp_to_spot: dict[str, str] | None = None,
     ):
         self.db = db
         self.exchange = exchange
         self.cfg = cfg
         self.on_notify = on_notify or _noop_notify
+        # Maps Binance perp symbol → the DB position's spot symbol so the
+        # diff function compares apples-to-apples regardless of venue naming.
+        self.perp_to_spot = perp_to_spot or {}
         self._task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -106,7 +110,9 @@ class Reconciler:
 
         db_perp_by_symbol = {p.symbol: p.perp_qty for p in db_positions if p.perp_qty != 0}
         ex_perp_by_symbol = {
-            p.symbol: p.qty for p in ex_positions if p.leg == "perp"
+            self.perp_to_spot.get(p.symbol, p.symbol): p.qty
+            for p in ex_positions
+            if p.leg == "perp"
         }
 
         all_symbols = set(db_perp_by_symbol) | set(ex_perp_by_symbol)

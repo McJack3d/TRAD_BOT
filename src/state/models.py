@@ -84,7 +84,7 @@ class Position(Base):
     realized_pnl: Mapped[Decimal] = mapped_column(DECIMAL(28, 12), default=Decimal("0"))
     funding_collected: Mapped[Decimal] = mapped_column(DECIMAL(28, 12), default=Decimal("0"))
 
-    orders: Mapped[list["Order"]] = relationship(back_populates="position")
+    orders: Mapped[list[Order]] = relationship(back_populates="position")
 
 
 class Order(Base):
@@ -109,8 +109,8 @@ class Order(Base):
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_update_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    position: Mapped["Position"] = relationship(back_populates="orders")
-    fills: Mapped[list["Fill"]] = relationship(back_populates="order")
+    position: Mapped[Position] = relationship(back_populates="orders")
+    fills: Mapped[list[Fill]] = relationship(back_populates="order")
 
 
 class Fill(Base):
@@ -125,7 +125,7 @@ class Fill(Base):
     fee_asset: Mapped[str] = mapped_column(String(16))
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    order: Mapped["Order"] = relationship(back_populates="fills")
+    order: Mapped[Order] = relationship(back_populates="fills")
 
 
 class FundingPayment(Base):

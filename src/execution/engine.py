@@ -57,7 +57,10 @@ class ExecutionEngine:
         self.cfg = cfg
         self.db = db
         self.exchange = exchange
-        self.dry_run = dry_run or cfg.mode in (Mode.PAPER, Mode.DRY_RUN, Mode.BACKTEST)
+        # DRY_RUN and BACKTEST modes simulate fills inside the engine without
+        # ever touching the exchange. PAPER mode goes through the exchange
+        # adapter (typically `FakeExchange`) so the full pipeline is exercised.
+        self.dry_run = dry_run or cfg.mode in (Mode.DRY_RUN, Mode.BACKTEST)
         self._lock = asyncio.Lock()
 
     def _symbol_config(self, symbol: str) -> SymbolConfig:
@@ -119,10 +122,10 @@ class ExecutionEngine:
                     symbol=symbol,
                     status=PositionStatus.OPEN,
                     spot_qty=spot_filled,
-                    perp_qty=perp_order.filled_qty,
-                    spot_entry_price=spot_order.avg_fill_price,
-                    perp_entry_price=perp_order.avg_fill_price,
-                    initial_margin=(perp_order.filled_qty * perp_order.avg_fill_price)
+                    perp_qty=-perp_order.filled_qty,  # short → signed negative
+                    spot_entry_price=spot_order.avg_price,
+                    perp_entry_price=perp_order.avg_price,
+                    initial_margin=(perp_order.filled_qty * perp_order.avg_price)
                     / Decimal(self.cfg.strategy.perp_leverage),
                     opened_at=datetime.now(UTC),
                 )
@@ -132,7 +135,7 @@ class ExecutionEngine:
                 symbol=symbol,
                 position_id=position.id,
                 spot_qty=str(spot_filled),
-                perp_qty=str(perp_order.filled_qty),
+                perp_qty=str(-perp_order.filled_qty),
             )
             return position
 
@@ -157,8 +160,8 @@ class ExecutionEngine:
                 symbol=sc.spot, leg="spot", side="sell", qty=pos.spot_qty
             )
 
-            spot_avg = spot_order.avg_fill_price if spot_order else Decimal("0")
-            perp_avg = perp_order.avg_fill_price if perp_order else Decimal("0")
+            spot_avg = spot_order.avg_price if spot_order else Decimal("0")
+            perp_avg = perp_order.avg_price if perp_order else Decimal("0")
             spot_pnl = (spot_avg - pos.spot_entry_price) * pos.spot_qty
             perp_pnl = (pos.perp_entry_price - perp_avg) * abs(pos.perp_qty)
             realized = spot_pnl + perp_pnl + pos.funding_collected

@@ -13,10 +13,12 @@ from pathlib import Path
 from src.adapters.binance import BinanceAdapter
 from src.config import BotConfig, Mode, Secrets
 from src.data import MarketData
+from src.data.binance_ws import BinanceWebSocket
 from src.execution.engine import ExecutionEngine
+from src.funding import FundingPoller
 from src.killswitch import KillSwitch
 from src.logging_setup import configure_logging, log
-from src.monitoring import EmailNotifier, TelegramNotifier
+from src.monitoring import DigestScheduler, EmailNotifier, TelegramNotifier
 from src.reconciliation import Reconciler
 from src.risk import RiskManager
 from src.state import Database
@@ -73,12 +75,20 @@ async def run(config_path: str, kill_file: str) -> None:
         exchange=exchange,
         symbols=[s.spot for s in cfg.symbols],
     )
+    # WS gives live updates; the REST poller in MarketData stays running
+    # as fallback so a WS drop doesn't blank the snapshots.
+    binance_ws = BinanceWebSocket(
+        market_data=market_data,
+        symbols=[s.spot for s in cfg.symbols],
+        perp_symbols=[s.perp for s in cfg.symbols],
+        testnet=secrets.binance_testnet,
+    )
 
     execution = ExecutionEngine(
         cfg=cfg,
         db=db,
         exchange=exchange,
-        dry_run=cfg.mode in (Mode.PAPER, Mode.DRY_RUN),
+        dry_run=cfg.mode == Mode.DRY_RUN,
     )
 
     risk = RiskManager(
@@ -96,6 +106,7 @@ async def run(config_path: str, kill_file: str) -> None:
         exchange=exchange,
         cfg=cfg.reconciliation,
         on_notify=notify,
+        perp_to_spot={s.perp: s.spot for s in cfg.symbols},
     )
 
     killswitch = KillSwitch(
@@ -112,10 +123,27 @@ async def run(config_path: str, kill_file: str) -> None:
         execution=execution,
     )
 
+    funding_poller = FundingPoller(
+        db=db,
+        exchange=exchange,
+        market_data=market_data,
+        symbols=cfg.symbols,
+    )
+
+    digest = DigestScheduler(cfg=cfg, db=db, email=email)
+
     await market_data.start()
+    if cfg.mode in (Mode.LIVE, Mode.PAPER) and secrets.binance_api_key:
+        try:
+            await binance_ws.start()
+        except Exception as e:
+            log.warning("ws.start_failed", error=str(e))
     await risk.start()
     await reconciler.start()
     await killswitch.start()
+    await funding_poller.start()
+    if cfg.monitoring.email_enabled:
+        await digest.start()
     if cfg.monitoring.telegram_enabled:
         await telegram.start()
 
@@ -143,7 +171,7 @@ async def run(config_path: str, kill_file: str) -> None:
                 log.exception("bot.tick.error", error=str(e))
             try:
                 await asyncio.wait_for(stop_event.wait(), timeout=60.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     tick_task = asyncio.create_task(tick_loop())
@@ -153,9 +181,13 @@ async def run(config_path: str, kill_file: str) -> None:
 
     tick_task.cancel()
     await market_data.stop()
+    await binance_ws.stop()
     await risk.stop()
     await reconciler.stop()
     await killswitch.stop()
+    await funding_poller.stop()
+    if cfg.monitoring.email_enabled:
+        await digest.stop()
     if cfg.monitoring.telegram_enabled:
         await telegram.stop()
     await exchange.close()
