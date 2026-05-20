@@ -5,8 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 from pathlib import Path
 
-import pytest
-
 from src.adapters.fake import FakeExchange
 from src.simple_bot import SimpleBot
 from src.state import Database

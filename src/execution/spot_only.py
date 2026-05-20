@@ -17,7 +17,6 @@ from src.logging_setup import log
 from src.state import Database
 from src.state.models import Fill, Leg, Order, OrderStatus, Side
 
-
 # Keep a small buffer so the order never tries to spend more than we have
 # after exchange-side rounding and fee debit.
 _BUFFER_PCT = Decimal("0.005")

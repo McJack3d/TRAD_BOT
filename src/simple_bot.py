@@ -29,7 +29,7 @@ from src.adapters.exchange_base import ExchangeAdapter
 from src.execution.spot_only import go_in, go_out
 from src.logging_setup import log
 from src.state import Database
-from src.state.models import SystemStatus, SystemStatusEnum
+from src.state.models import SystemStatus
 from src.strategy.sma_trend import TrendSignal, TrendState, evaluate_trend
 
 
@@ -129,8 +129,8 @@ class SimpleBot:
         try:
             t = await self.exchange.fetch_ticker(self.symbol, "spot")
             last_price = t.last
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("simple_bot.status.no_price", error=str(e))
         return BotStatus(
             enabled=enabled,
             current_state=current,
