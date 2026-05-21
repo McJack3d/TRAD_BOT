@@ -29,11 +29,12 @@ async def go_in(
     qty_step: Decimal = Decimal("0.00001"),
     min_qty: Decimal = Decimal("0.00001"),
 ) -> ExchangeOrder | None:
-    """Buy as much BTC as available USDT allows. Returns the fill, or None."""
+    """Buy as much base as available quote allows. Returns the fill, or None."""
+    _, quote = symbol.split("/", maxsplit=1)
     balances = await exchange.fetch_balances()
-    usdt = balances.get("spot:USDT")
-    if usdt is None or usdt.free <= 0:
-        log.info("trend.go_in.no_usdt")
+    quote_bal = balances.get(f"spot:{quote}")
+    if quote_bal is None or quote_bal.free <= 0:
+        log.info("trend.go_in.no_quote", asset=quote)
         return None
 
     ticker = await exchange.fetch_ticker(symbol, "spot")
@@ -42,7 +43,7 @@ async def go_in(
         log.warning("trend.go_in.no_price", symbol=symbol)
         return None
 
-    budget = usdt.free * (Decimal("1") - _BUFFER_PCT)
+    budget = quote_bal.free * (Decimal("1") - _BUFFER_PCT)
     qty = round_qty(budget / ask, qty_step)
     if qty < min_qty:
         log.info("trend.go_in.below_min", qty=str(qty), min=str(min_qty))

@@ -39,8 +39,11 @@ class BotStatus:
     current_state: TrendState
     last_signal: TrendSignal | None
     last_evaluated: datetime | None
-    btc_qty: Decimal
-    usdt_qty: Decimal
+    btc_qty: Decimal  # quantity of the BASE asset (BTC, ETH, ...)
+    usdt_qty: Decimal  # quantity of the QUOTE asset (USDT, USDC, EUR, ...)
+    last_price: Decimal
+    base_asset: str = "BTC"
+    quote_asset: str = "USDT"
     last_price: Decimal
 
 
@@ -208,9 +211,9 @@ class SimpleBot:
         enabled = await self.is_enabled()
         current = await self.current_state()
         balances = await self.exchange.fetch_balances()
-        base = self.symbol.split("/", maxsplit=1)[0]
-        btc = balances.get(f"spot:{base}")
-        usdt = balances.get("spot:USDT")
+        base, quote = self.symbol.split("/", maxsplit=1)
+        base_bal = balances.get(f"spot:{base}")
+        quote_bal = balances.get(f"spot:{quote}")
         last_price = Decimal("0")
         try:
             t = await self.exchange.fetch_ticker(self.symbol, "spot")
@@ -222,9 +225,11 @@ class SimpleBot:
             current_state=current,
             last_signal=self._last_signal,
             last_evaluated=self._last_evaluated,
-            btc_qty=btc.total if btc else Decimal("0"),
-            usdt_qty=usdt.total if usdt else Decimal("0"),
+            btc_qty=base_bal.total if base_bal else Decimal("0"),
+            usdt_qty=quote_bal.total if quote_bal else Decimal("0"),
             last_price=last_price,
+            base_asset=base,
+            quote_asset=quote,
         )
 
     async def current_state(self) -> TrendState:

@@ -195,9 +195,9 @@ def main() -> None:
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Trading", "ON" if status.enabled else "OFF")
     c2.metric("Position", status.current_state.value.upper())
-    c3.metric("BTC price", f"${status.last_price:,.2f}" if status.last_price else "—")
+    c3.metric(f"{status.base_asset} price", f"{status.last_price:,.2f}" if status.last_price else "—")
     equity = status.usdt_qty + status.btc_qty * status.last_price
-    c4.metric("Equity (USDT)", f"${equity:,.2f}")
+    c4.metric(f"Equity ({status.quote_asset})", f"{equity:,.2f}")
 
     age = st.session_state.get("status_age")
     if age is not None:
@@ -239,8 +239,8 @@ def main() -> None:
             st.success(f"Signal: {sig.state.value.upper()} — {sig.reason}")
             _fetch_status(bot)
             st.rerun()
-    if b4.button("💵 Flatten to USDT", use_container_width=True):
-        with st.spinner("Selling BTC to USDT..."):
+    if b4.button(f"💵 Flatten to {status.quote_asset}", use_container_width=True):
+        with st.spinner(f"Selling {status.base_asset} to {status.quote_asset}..."):
             try:
                 _run(bot.flatten_now())
                 _run(_snapshot_equity(db, bot))
@@ -275,8 +275,8 @@ def main() -> None:
         st.subheader("Holdings")
         holdings = pd.DataFrame(
             [
-                {"asset": "BTC", "qty": float(status.btc_qty), "value_usdt": float(status.btc_qty * status.last_price)},
-                {"asset": "USDT", "qty": float(status.usdt_qty), "value_usdt": float(status.usdt_qty)},
+                {"asset": status.base_asset, "qty": float(status.btc_qty), "value_quote": float(status.btc_qty * status.last_price)},
+                {"asset": status.quote_asset, "qty": float(status.usdt_qty), "value_quote": float(status.usdt_qty)},
             ]
         )
         st.dataframe(holdings, use_container_width=True, hide_index=True)
@@ -325,7 +325,7 @@ def main() -> None:
         st.markdown(
             f"""
             **Asset:** {SYMBOL}
-            **Rule:** Close > {SMA_WINDOW}-day SMA → hold BTC; else hold USDT.
+            **Rule:** Close > {SMA_WINDOW}-day SMA → hold {status.base_asset}; else hold {status.quote_asset}.
             **Evaluation:** click *Evaluate now*, or come back tomorrow.
             **No leverage. No shorting. No funding settlements.**
 
