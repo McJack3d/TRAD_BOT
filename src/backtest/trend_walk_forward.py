@@ -19,8 +19,46 @@ from itertools import product
 
 import pandas as pd
 
-from src.backtest.trend_backtest import backtest_sma_trend
+from src.backtest.trend_backtest import TrendBacktestResult, backtest_sma_trend
 from src.backtest.trend_metrics import FullMetrics, compute_full_metrics
+
+
+def _slice_to_test_window(
+    r: TrendBacktestResult,
+    test_start: pd.Timestamp,
+    test_end: pd.Timestamp,
+    baseline_equity: Decimal,
+) -> TrendBacktestResult:
+    """Trim a full backtest result (warmup + test) down to just the test
+    portion, with equity normalized so it starts at `baseline_equity`."""
+    eq = r.equity_curve.copy()
+    eq["ts"] = pd.to_datetime(eq["ts"], utc=True)
+    eq = eq[(eq["ts"] >= test_start) & (eq["ts"] <= test_end)].reset_index(drop=True)
+
+    def _trade_in_window(t: dict) -> bool:
+        ts = pd.Timestamp(t["ts"])
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return test_start <= ts <= test_end
+
+    test_trades = [t for t in r.trades if _trade_in_window(t)]
+    if eq.empty:
+        return TrendBacktestResult(
+            equity_curve=eq,
+            trades=test_trades,
+            initial_equity=baseline_equity,
+            final_equity=baseline_equity,
+            final_buy_and_hold=baseline_equity,
+        )
+    final_eq = Decimal(str(eq["strategy_equity"].iloc[-1]))
+    final_bh = Decimal(str(eq["buy_and_hold_equity"].iloc[-1]))
+    return TrendBacktestResult(
+        equity_curve=eq,
+        trades=test_trades,
+        initial_equity=baseline_equity,
+        final_equity=final_eq,
+        final_buy_and_hold=final_bh,
+    )
 
 # Coarse grids — no fine tuning. Anything beyond this is overfitting.
 SMA_GRID = [100, 150, 200, 250]
@@ -92,14 +130,22 @@ def walk_forward_trend(
             continue
 
         train_metrics, sma, buffer, _ = best
-        test_r = backtest_sma_trend(
-            test_closes,
+        # Feed the test backtest enough pre-test history to compute SMA
+        # immediately, then mark trade_start so it doesn't trade on the
+        # warmup days. Otherwise an SMA-250 chosen by the optimizer can't
+        # do anything on a 180-day test window — it'd never warm up.
+        warmup_start = train_end - timedelta(days=sma + 30)
+        test_with_warmup = closes.loc[warmup_start:test_end]
+        full_r = backtest_sma_trend(
+            test_with_warmup,
             initial_equity=initial_equity,
             sma_window=sma,
             entry_buffer_pct=buffer,
             exit_buffer_pct=buffer,
             trailing_stop_pct=trailing_stop_pct,
+            trade_start=train_end,
         )
+        test_r = _slice_to_test_window(full_r, train_end, test_end, initial_equity)
         test_metrics = compute_full_metrics(test_r)
         windows.append(
             WFWindow(

@@ -33,6 +33,7 @@ def backtest_sma_trend(
     entry_buffer_pct: float = 0.0,
     exit_buffer_pct: float = 0.0,
     trailing_stop_pct: float = 0.0,
+    trade_start: pd.Timestamp | None = None,
 ) -> TrendBacktestResult:
     """Run the SMA trend strategy on a series of daily closes.
 
@@ -91,12 +92,19 @@ def backtest_sma_trend(
         position = TrendState.OUT
         peak_since_entry = None
 
+    trade_start_ts = (
+        pd.Timestamp(trade_start, tz="UTC")
+        if trade_start is not None and pd.Timestamp(trade_start).tzinfo is None
+        else trade_start
+    )
+
     for i in range(len(daily_closes)):
         ts = daily_closes.index[i]
         close = Decimal(str(daily_closes.iloc[i]))
+        trading_active = trade_start_ts is None or ts >= trade_start_ts
 
         # Track peak for trailing stop and check stop condition first.
-        if position == TrendState.IN:
+        if position == TrendState.IN and trading_active:
             assert peak_since_entry is not None
             if close > peak_since_entry:
                 peak_since_entry = close
@@ -107,7 +115,7 @@ def backtest_sma_trend(
                     stopped_out_cooldown = True
 
         # SMA signal evaluation (with hysteresis).
-        if i + 1 >= sma_window:
+        if i + 1 >= sma_window and trading_active:
             window_closes = daily_closes.iloc[: i + 1]
             signal = evaluate_trend(
                 window_closes,
