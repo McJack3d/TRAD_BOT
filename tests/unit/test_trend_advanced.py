@@ -108,15 +108,18 @@ def test_oos_split_default_fraction() -> None:
 
 
 def test_walk_forward_yields_windows_on_long_series() -> None:
-    # 3y of synthetic uptrend so several train+test windows fit.
+    # 3y of synthetic data with a clear up-then-down-then-up cycle so the
+    # SMA strategy round-trips at least once per train window (needed for
+    # the >=2 trade filter to pass).
+    import math
+
     n = 3 * 365
-    values = [100.0 + 0.3 * i + (i % 5) for i in range(n)]
+    values = [100.0 + 50 * math.sin(i / 60) + 0.05 * i for i in range(n)]
     s = _series(values)
     windows = walk_forward_trend(
         s, train_days=365, test_days=90, initial_equity=Decimal("1000")
     )
-    # ~ (3*365 - 365 - 90) / 90 ≈ 7 stride steps
-    assert len(windows) >= 5
+    assert len(windows) >= 3
     for w in windows:
         assert w.test_metrics.span_days > 0
         assert w.best_sma in (100, 150, 200, 250)

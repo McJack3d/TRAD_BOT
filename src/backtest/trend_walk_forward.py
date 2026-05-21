@@ -65,8 +65,10 @@ def walk_forward_trend(
         train_closes = closes.loc[cur:train_end]
         test_closes = closes.loc[train_end:test_end]
 
-        # Grid search on the train window for best Sharpe.
-        best: tuple[FullMetrics, int, float] | None = None
+        # Grid search on the train window for best Sharpe — but only among
+        # parameter sets that actually traded. A no-trade run has zero
+        # variance and looks deceptively "safe" to a naive Sharpe optimizer.
+        best: tuple[FullMetrics, int, float, int] | None = None
         for sma, buffer in product(SMA_GRID, BUFFER_GRID):
             if len(train_closes) < sma + 30:
                 continue
@@ -78,15 +80,18 @@ def walk_forward_trend(
                 exit_buffer_pct=buffer,
                 trailing_stop_pct=trailing_stop_pct,
             )
+            if len(r.trades) < 2:
+                # Need at least one round-trip to know the params do anything.
+                continue
             m = compute_full_metrics(r)
             if best is None or m.sharpe > best[0].sharpe:
-                best = (m, sma, buffer)
+                best = (m, sma, buffer, len(r.trades))
 
         if best is None:
             cur += timedelta(days=test_days)
             continue
 
-        train_metrics, sma, buffer = best
+        train_metrics, sma, buffer, _ = best
         test_r = backtest_sma_trend(
             test_closes,
             initial_equity=initial_equity,
