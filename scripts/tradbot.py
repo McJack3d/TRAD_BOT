@@ -123,6 +123,8 @@ async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: 
                 file=sys.stderr,
             )
 
+    from src.notify import best_notifier
+
     bot = SimpleBot(
         exchange=ex,
         db=db,
@@ -131,6 +133,7 @@ async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: 
         entry_buffer_pct=ENTRY_BUFFER,
         exit_buffer_pct=EXIT_BUFFER,
         trailing_stop_pct=TRAILING_STOP,
+        notifier=best_notifier(),
     )
     return bot, ex, db
 
@@ -480,6 +483,57 @@ async def cmd_watch(args, console: Console) -> int:
             return 0
 
 
+async def cmd_install_cron(args, console: Console) -> int:
+    from src.scheduler import install
+
+    try:
+        p = install(_PROJECT_ROOT, hour_utc=args.hour, minute_utc=args.minute)
+    except SystemExit as e:
+        console.print(f"[red]✗[/] {e}")
+        return 1
+    console.print(
+        f"[green]✓[/] Installed launchd agent at {p.plist}\n"
+        f"  Runs daily at {args.hour:02d}:{args.minute:02d} UTC\n"
+        f"  Logs: {p.stdout_log}\n"
+        f"  Errors: {p.stderr_log}\n"
+        f"\nVerify with: launchctl list | grep tradbot"
+    )
+    return 0
+
+
+async def cmd_uninstall_cron(args, console: Console) -> int:
+    from src.scheduler import uninstall
+
+    removed = uninstall(_PROJECT_ROOT)
+    if removed is None:
+        console.print("[dim]No launchd agent installed.[/]")
+        return 0
+    console.print(f"[green]✓[/] Removed {removed}")
+    return 0
+
+
+async def cmd_cron_status(args, console: Console) -> int:
+    from src.scheduler import status
+
+    s = status(_PROJECT_ROOT)
+    if not s.get("installed"):
+        console.print(
+            "[dim]No launchd agent installed.[/] Run `tradbot install-cron` to add one."
+        )
+        return 0
+    table = Table(title="launchd auto-eval status", expand=False)
+    table.add_column("field")
+    table.add_column("value")
+    for k, v in s.items():
+        if k == "installed":
+            v = "[green]yes[/]" if v else "[red]no[/]"
+        elif k == "loaded":
+            v = "[green]yes[/]" if v else "[red]no[/]"
+        table.add_row(k, str(v))
+    console.print(table)
+    return 0
+
+
 async def cmd_backtest(args, console: Console) -> int:
     """Run the 5-year backtest and print the comparison table."""
     from src.backtest.trend_backtest import backtest_sma_trend
@@ -561,6 +615,18 @@ def main() -> None:
     p_bt.add_argument("--years", type=int, default=5)
     p_bt.add_argument("--equity", type=float, default=1000)
 
+    p_ic = sub.add_parser(
+        "install-cron",
+        help="Install a launchd agent that runs `tradbot evaluate` daily (macOS).",
+    )
+    p_ic.add_argument(
+        "--hour", type=int, default=0,
+        help="Hour UTC to run (0-23). Default 0 (just after midnight UTC).",
+    )
+    p_ic.add_argument("--minute", type=int, default=5)
+    sub.add_parser("uninstall-cron", help="Remove the launchd agent.")
+    sub.add_parser("cron-status", help="Show launchd agent install state.")
+
     args = parser.parse_args()
     console = Console()
     handler = {
@@ -576,6 +642,9 @@ def main() -> None:
         "reset": cmd_reset,
         "watch": cmd_watch,
         "backtest": cmd_backtest,
+        "install-cron": cmd_install_cron,
+        "uninstall-cron": cmd_uninstall_cron,
+        "cron-status": cmd_cron_status,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

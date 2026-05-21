@@ -57,7 +57,11 @@ class SimpleBot:
         entry_buffer_pct: float = 0.01,
         exit_buffer_pct: float = 0.01,
         trailing_stop_pct: float = 0.0,
+        notifier=None,
     ):
+        from src.notify import noop_notifier
+
+        self.notifier = notifier or noop_notifier
         self.exchange = exchange
         self.db = db
         self.symbol = symbol
@@ -170,6 +174,11 @@ class SimpleBot:
                     )
                     current = TrendState.OUT
                     block_entry_this_tick = True
+                    self._notify(
+                        "Trailing stop fired",
+                        f"Sold {fill.filled_qty} {self.symbol.split('/')[0]} @ "
+                        f"${fill.avg_price:,.2f} (peak ${peak:,.2f} → trigger)",
+                    )
                 else:
                     log.warning("simple_bot.tick.trailing_stop.exit_failed")
 
@@ -186,10 +195,15 @@ class SimpleBot:
         # Rebalance. Only update DB state if the order succeeded — keeps DB
         # consistent with the exchange when an order is rejected (min-notional,
         # insufficient balance, etc.).
+        base, quote = self.symbol.split("/", maxsplit=1)
         if signal.state == TrendState.IN:
             fill = await go_in(self.exchange, self.db, symbol=self.symbol)
             if fill is None:
                 log.warning("simple_bot.tick.go_in_failed")
+                self._notify(
+                    "Order rejected",
+                    f"Buy {base} failed (likely min-notional or balance).",
+                )
                 return signal
             entry_price = fill.avg_price if fill.avg_price > 0 else (current_price or signal.close)
             await self._set_meta(
@@ -197,13 +211,25 @@ class SimpleBot:
                 peak_since_entry=str(entry_price),
                 stop_cooldown="false",
             )
+            self._notify(
+                f"{self.symbol} → IN",
+                f"Bought {fill.filled_qty} {base} @ ${fill.avg_price:,.2f}",
+            )
         else:
             fill = await go_out(self.exchange, self.db, symbol=self.symbol)
             if fill is None:
                 log.warning("simple_bot.tick.go_out_failed")
+                self._notify(
+                    "Order rejected",
+                    f"Sell {base} failed (likely min-notional or balance).",
+                )
                 return signal
             await self._set_meta(
                 current_state=TrendState.OUT.value, peak_since_entry="0"
+            )
+            self._notify(
+                f"{self.symbol} → OUT",
+                f"Sold {fill.filled_qty} {base} @ ${fill.avg_price:,.2f}",
             )
         log.info(
             "simple_bot.tick.flipped",
@@ -212,6 +238,13 @@ class SimpleBot:
             reason=signal.reason,
         )
         return signal
+
+    def _notify(self, title: str, message: str) -> None:
+        """Wrap the notifier so a buggy notifier never crashes a trade."""
+        try:
+            self.notifier(title, message)
+        except Exception as e:
+            log.warning("simple_bot.notify.error", error=str(e))
 
     async def flatten_now(self) -> None:
         """Force-sell BTC to USDT regardless of signal. Useful before going
