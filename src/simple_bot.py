@@ -53,7 +53,7 @@ class SimpleBot:
         sma_window: int = 200,
         entry_buffer_pct: float = 0.01,
         exit_buffer_pct: float = 0.01,
-        trailing_stop_pct: float = 0.15,
+        trailing_stop_pct: float = 0.0,
     ):
         self.exchange = exchange
         self.db = db

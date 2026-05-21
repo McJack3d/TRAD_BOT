@@ -151,7 +151,7 @@ def main() -> None:
     parser.add_argument("--years", type=int, default=5)
     parser.add_argument("--sma", type=int, default=200)
     parser.add_argument("--buffer", type=float, default=0.01)
-    parser.add_argument("--trailing", type=float, default=0.15)
+    parser.add_argument("--trailing", type=float, default=0.0)
     parser.add_argument("--equity", type=float, default=1000)
     args = parser.parse_args()
     _run(args.years, args.sma, args.buffer, args.trailing, args.equity)

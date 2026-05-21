@@ -196,8 +196,11 @@ def main() -> None:
     parser.add_argument(
         "--trailing-stop",
         type=float,
-        default=0.15,
-        help="Trailing stop loss as a fraction (e.g. 0.15 = 15%%). 0 = off.",
+        default=0.0,
+        help="Trailing stop loss as a fraction. Default 0 = off; backtest "
+             "validation showed 15%% cuts winning trends short. Use 0.25+ if you "
+             "want it on at all, but the SMA exit-buffer already provides the "
+             "downside protection.",
     )
     args = parser.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
