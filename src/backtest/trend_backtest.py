@@ -103,6 +103,13 @@ def backtest_sma_trend(
         close = Decimal(str(daily_closes.iloc[i]))
         trading_active = trade_start_ts is None or ts >= trade_start_ts
 
+        # Cooldown only blocks re-entry on the bar AFTER the stop fires
+        # (i.e. the iteration after stopped_out_cooldown was set). Reset
+        # at the top so it doesn't lock us out for the entire run when
+        # the SMA signal stays IN through a sharp drop + recovery.
+        block_entry_this_bar = stopped_out_cooldown
+        stopped_out_cooldown = False
+
         # Track peak for trailing stop and check stop condition first.
         if position == TrendState.IN and trading_active:
             assert peak_since_entry is not None
@@ -112,6 +119,8 @@ def backtest_sma_trend(
                 trigger = peak_since_entry * (Decimal("1") - Decimal(str(trailing_stop_pct)))
                 if close <= trigger:
                     _exit(close, ts, reason="trailing_stop")
+                    # Block re-entry on this bar AND the next.
+                    block_entry_this_bar = True
                     stopped_out_cooldown = True
 
         # SMA signal evaluation (with hysteresis).
@@ -123,12 +132,9 @@ def backtest_sma_trend(
                 entry_buffer_pct=entry_buffer_pct,
                 exit_buffer_pct=exit_buffer_pct,
             )
-            # Cooldown: after a trailing stop, we wait for OUT to clear
-            # before considering re-entry. This prevents re-buying on the
-            # same drawdown bar.
-            if stopped_out_cooldown and signal.state == TrendState.OUT:
-                stopped_out_cooldown = False
-            if signal.state != position and not stopped_out_cooldown:
+            if signal.state != position and not (
+                signal.state == TrendState.IN and block_entry_this_bar
+            ):
                 if signal.state == TrendState.IN:
                     _enter(close, ts)
                 else:

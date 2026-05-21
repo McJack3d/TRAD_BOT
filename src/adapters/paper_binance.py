@@ -26,10 +26,34 @@ class PaperBinanceAdapter(FakeExchange):
         starting_usdt: Decimal = Decimal("1000"),
         slippage_bps: Decimal = Decimal("2.0"),
         fee_bps: Decimal = Decimal("4.0"),
+        quote_asset: str = "USDT",
+        spot_only: bool = True,
     ):
         super().__init__(starting_usdt=starting_usdt, slippage_bps=slippage_bps, fee_bps=fee_bps)
+        # Override the inherited 50/50 spot/perp seeding. The trend bot is
+        # spot-only so the user expects to see ALL their paper money under
+        # spot. The funding-arb path still uses raw FakeExchange and gets
+        # the 50/50 split.
+        from src.adapters.exchange_base import Balance
+
+        if spot_only:
+            self._balances = {
+                f"spot:{quote_asset}": Balance(
+                    quote_asset, starting_usdt, Decimal("0"), starting_usdt
+                ),
+            }
+        else:
+            self._balances = {
+                f"spot:{quote_asset}": Balance(
+                    quote_asset, starting_usdt / 2, Decimal("0"), starting_usdt / 2
+                ),
+                f"perp:{quote_asset}": Balance(
+                    quote_asset, starting_usdt / 2, Decimal("0"), starting_usdt / 2
+                ),
+            }
+
         # Public-only ccxt clients — no API key. Short timeouts so a blip in
-        # network connectivity doesn't hang the Streamlit UI for minutes.
+        # network connectivity doesn't hang the UI for minutes.
         common = {"enableRateLimit": True, "timeout": 10_000}
         self.spot = ccxt.binance(common)
         self.perp = ccxt.binanceusdm(common)

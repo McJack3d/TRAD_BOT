@@ -103,12 +103,18 @@ class SimpleBot:
         """One evaluation cycle. If enabled, evaluate the signal, check the
         trailing-stop guard, and rebalance if needed.
 
-        Order of operations matters:
-          1. Trailing stop first — if we're IN and current price is too far
-             below the post-entry peak, force-exit regardless of the SMA
-             signal. Sets a one-tick cooldown so we don't immediately re-buy.
-          2. Then evaluate the SMA signal. If signal differs from current
-             position (and we're not in cooldown), rebalance.
+        Order of operations:
+          1. Read state + cooldown flag, then clear the cooldown immediately
+             (it's a SAME-TICK guard from the previous run, not multi-tick).
+          2. Trailing stop check — if we're IN and current price is too far
+             below the post-entry peak, force-exit and set cooldown so we
+             don't re-buy on this tick's signal evaluation.
+          3. Evaluate the SMA signal and rebalance if it differs from
+             current position and cooldown isn't set for this tick.
+
+        Order persistence: we only update current_state in the DB AFTER the
+        exchange order succeeds. A failed buy (e.g. min-notional reject)
+        leaves the DB consistent with the exchange.
         """
         if not await self.is_enabled():
             log.info("simple_bot.tick.disabled")
@@ -117,9 +123,18 @@ class SimpleBot:
         current = await self.current_state()
         meta = await self._get_meta()
         peak = Decimal(meta.get("peak_since_entry", "0") or "0")
-        cooldown = meta.get("stop_cooldown") == "true"
+        # Read AND clear the cooldown flag. If the previous tick set it, this
+        # tick is the "one tick of cooldown" the trailing stop bought us. We
+        # don't carry it past this iteration — that was the bug that locked
+        # us out of re-entries during sharp drops that the SMA didn't catch.
+        carried_cooldown = meta.get("stop_cooldown") == "true"
+        if carried_cooldown:
+            await self._set_meta(stop_cooldown="false")
+        # `block_entry_this_tick` is True if either we just stopped out this
+        # tick OR the previous tick passed us the cooldown flag.
+        block_entry_this_tick = carried_cooldown
 
-        # Get fresh price for stop check + signal eval.
+        # Fresh price for stop check + signal eval.
         try:
             ticker = await self.exchange.fetch_ticker(self.symbol, "spot")
             current_price = ticker.last or (ticker.bid + ticker.ask) / 2
@@ -146,47 +161,47 @@ class SimpleBot:
                     current=str(current_price),
                     trigger=str(trigger),
                 )
-                await go_out(self.exchange, self.db, symbol=self.symbol)
-                await self._set_meta(
-                    current_state=TrendState.OUT.value,
-                    peak_since_entry="0",
-                    stop_cooldown="true",
-                )
-                # Synthesize a "stop" signal for reporting.
-                from src.strategy.sma_trend import TrendSignal as _TS
-                return _TS(
-                    state=TrendState.OUT,
-                    close=current_price,
-                    sma=Decimal("0"),
-                    reason=f"trailing stop hit: peak {peak} → current {current_price}",
-                )
+                fill = await go_out(self.exchange, self.db, symbol=self.symbol)
+                if fill is not None:
+                    await self._set_meta(
+                        current_state=TrendState.OUT.value,
+                        peak_since_entry="0",
+                        stop_cooldown="true",  # block re-entry on next tick
+                    )
+                    current = TrendState.OUT
+                    block_entry_this_tick = True
+                else:
+                    log.warning("simple_bot.tick.trailing_stop.exit_failed")
 
         signal = await self.evaluate()
-
-        # Clear cooldown once signal goes OUT (or stays OUT) — we only re-enter
-        # after a fresh fully-fledged IN signal.
-        if cooldown and signal.state == TrendState.OUT:
-            await self._set_meta(stop_cooldown="false")
-            cooldown = False
 
         if signal.state == current:
             log.info("simple_bot.tick.no_change", state=current.value)
             return signal
-        if cooldown:
-            log.info("simple_bot.tick.in_cooldown")
+
+        if signal.state == TrendState.IN and block_entry_this_tick:
+            log.info("simple_bot.tick.entry_blocked_by_cooldown")
             return signal
 
+        # Rebalance. Only update DB state if the order succeeded — keeps DB
+        # consistent with the exchange when an order is rejected (min-notional,
+        # insufficient balance, etc.).
         if signal.state == TrendState.IN:
-            await go_in(self.exchange, self.db, symbol=self.symbol)
-            # Track entry peak for trailing stop.
-            entry_price = current_price if current_price > 0 else signal.close
+            fill = await go_in(self.exchange, self.db, symbol=self.symbol)
+            if fill is None:
+                log.warning("simple_bot.tick.go_in_failed")
+                return signal
+            entry_price = fill.avg_price if fill.avg_price > 0 else (current_price or signal.close)
             await self._set_meta(
                 current_state=TrendState.IN.value,
                 peak_since_entry=str(entry_price),
                 stop_cooldown="false",
             )
         else:
-            await go_out(self.exchange, self.db, symbol=self.symbol)
+            fill = await go_out(self.exchange, self.db, symbol=self.symbol)
+            if fill is None:
+                log.warning("simple_bot.tick.go_out_failed")
+                return signal
             await self._set_meta(
                 current_state=TrendState.OUT.value, peak_since_entry="0"
             )
@@ -210,16 +225,27 @@ class SimpleBot:
     async def status(self) -> BotStatus:
         enabled = await self.is_enabled()
         current = await self.current_state()
-        balances = await self.exchange.fetch_balances()
+        try:
+            balances = await self.exchange.fetch_balances()
+        except Exception as e:
+            log.warning("simple_bot.status.no_balances", error=str(e))
+            balances = {}
         base, quote = self.symbol.split("/", maxsplit=1)
         base_bal = balances.get(f"spot:{base}")
         quote_bal = balances.get(f"spot:{quote}")
+        # Try fresh price; on failure fall back to the most recent cached
+        # ticker on the exchange object, then to the last persisted snapshot.
         last_price = Decimal("0")
         try:
             t = await self.exchange.fetch_ticker(self.symbol, "spot")
-            last_price = t.last
+            last_price = t.last or (t.bid + t.ask) / 2 if t.ask else t.last
         except Exception as e:
             log.warning("simple_bot.status.no_price", error=str(e))
+            cached = getattr(self.exchange, "_tickers", {}).get((self.symbol, "spot"))
+            if cached and cached.last:
+                last_price = cached.last
+            elif self._last_signal and self._last_signal.close > 0:
+                last_price = self._last_signal.close
         return BotStatus(
             enabled=enabled,
             current_state=current,

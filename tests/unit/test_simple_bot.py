@@ -114,3 +114,20 @@ async def test_status_reports_holdings(tmp_path: Path) -> None:
     assert status.btc_qty > 0
     assert status.last_price == Decimal("60000")
     await db.close()
+
+
+async def test_state_unchanged_when_go_in_fails(tmp_path: Path) -> None:
+    """Regression: if the buy order fails (e.g. min notional), the bot
+    must NOT mark current_state=IN in the DB. Previously it did, leaving
+    state inconsistent with the actual exchange position."""
+    bot, ex, db = await _setup(tmp_path, starting_usdt=Decimal("0.5"))
+    # Starting with 0.25 USDT in spot (half of 0.5), too small to buy any
+    # BTC at $60k after rounding to 0.00001. go_in should return None.
+    await bot.enable()
+    bot.closes_override = [50000.0] * 49 + [70000.0]
+    sig = await bot.tick()
+    assert sig is not None and sig.state == TrendState.IN  # signal said IN
+    # But the DB state must still be OUT because go_in failed.
+    assert await bot.current_state() == TrendState.OUT
+    await db.close()
+

@@ -62,6 +62,29 @@ def test_trailing_stop_does_not_re_enter_immediately() -> None:
             raise AssertionError(f"two consecutive {sides[i]}s — cooldown broken")
 
 
+def test_trailing_stop_cooldown_clears_after_one_bar() -> None:
+    """Regression: cooldown used to require an OUT signal to clear, which
+    locked the bot out of re-entries during a sharp drop+recovery if the
+    SMA signal stayed IN. The cooldown is now a one-bar guard only."""
+    # Build a series where: SMA stays IN throughout, but a sudden drop
+    # triggers the trailing stop, and the price recovers above the SMA
+    # within a few bars. We MUST see a sell (stop) and a subsequent buy.
+    values = (
+        [100.0] * 50  # warmup
+        + [100.0 + 2 * i for i in range(30)]  # rise from 100 → 160
+        + [130.0]  # sharp drop → triggers stop with 15% trailing from 160 peak
+        + [180.0] * 20  # recover well above SMA
+    )
+    r = backtest_sma_trend(_series(values), sma_window=20, trailing_stop_pct=0.15)
+    sides = [t["side"] for t in r.trades]
+    reasons = [t.get("reason", "") for t in r.trades]
+    assert "trailing_stop" in reasons, "expected a trailing-stop sell on the drop bar"
+    # After the trailing stop sell, we must see at least one more buy.
+    stop_idx = reasons.index("trailing_stop")
+    later_buys = [s for s in sides[stop_idx + 1 :] if s == "buy"]
+    assert later_buys, "cooldown locked us out — never re-entered after the stop"
+
+
 # ---- metrics --------------------------------------------------------
 
 

@@ -77,12 +77,17 @@ no live dashboard needed, just one-shot commands.
 source .venv/bin/activate
 
 python -m scripts.tradbot status      # current state
+python -m scripts.tradbot config      # resolved settings (.env vs default)
+python -m scripts.tradbot signal      # read-only: what would the bot do now?
 python -m scripts.tradbot start       # enable trading
 python -m scripts.tradbot evaluate    # fetch + evaluate + trade
 python -m scripts.tradbot trades      # recent orders
 python -m scripts.tradbot equity      # equity snapshots
 python -m scripts.tradbot stop        # disable trading
 python -m scripts.tradbot flatten --yes  # sell all to quote
+python -m scripts.tradbot watch       # auto-refresh status every 30s
+python -m scripts.tradbot backtest    # quick backtest of current config
+python -m scripts.tradbot reset --yes # wipe paper DB and start over
 ```
 
 Paper mode uses **real-time Binance prices** (public REST, no key needed)

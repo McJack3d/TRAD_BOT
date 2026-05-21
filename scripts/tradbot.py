@@ -32,7 +32,22 @@ from pathlib import Path
 # request and can't be cleaned up. Cosmetic only.
 warnings.filterwarnings("ignore", message="Unclosed client session")
 warnings.filterwarnings("ignore", message="Unclosed connector")
-logging.getLogger("asyncio").setLevel(logging.ERROR)
+# Silence asyncio's noisy "Unclosed client session" ERRORs that fire on
+# ccxt cleanup paths when Binance was unreachable — they're cosmetic.
+logging.getLogger("asyncio").setLevel(logging.CRITICAL + 1)
+logging.basicConfig(level=logging.ERROR)
+# Silence structlog. The CLI uses rich for visible output; structlog
+# would otherwise dump JSON-ish info lines into the same terminal,
+# making the user think something went wrong when it didn't.
+try:
+    import structlog
+
+    structlog.configure(
+        wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR),
+        processors=[structlog.processors.JSONRenderer()],
+    )
+except ImportError:
+    pass
 
 # Make `src.*` importable regardless of where the user runs this from.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -69,9 +84,15 @@ SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 # ---- bot construction -----------------------------------------------
 
 
-async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: ignore[name-defined]
+async def make_db_only() -> Database:
+    """For commands that don't need an exchange (trades, equity, reset)."""
     db = Database(DB_PATH)
     await db.init(starting_equity=STARTING_USDT)
+    return db
+
+
+async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: ignore[name-defined]
+    db = await make_db_only()
 
     if LIVE:
         from src.adapters.binance import BinanceAdapter
@@ -89,7 +110,10 @@ async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: 
     else:
         from src.adapters.paper_binance import PaperBinanceAdapter
 
-        ex = PaperBinanceAdapter(starting_usdt=STARTING_USDT)
+        _, quote = SYMBOL.split("/", maxsplit=1)
+        ex = PaperBinanceAdapter(
+            starting_usdt=STARTING_USDT, quote_asset=quote, spot_only=True
+        )
         try:
             await ex.connect()
         except Exception as e:
@@ -257,7 +281,7 @@ async def cmd_trades(args, console: Console) -> int:
 
     from src.state.models import Order
 
-    bot, ex, db = await make_bot()
+    db = await make_db_only()
     try:
         async with db.session() as s:
             rows = (
@@ -286,7 +310,6 @@ async def cmd_trades(args, console: Console) -> int:
             )
         console.print(table)
     finally:
-        await ex.close()
         await db.close()
     return 0
 
@@ -294,7 +317,7 @@ async def cmd_trades(args, console: Console) -> int:
 async def cmd_equity(args, console: Console) -> int:
     from sqlalchemy import select
 
-    bot, ex, db = await make_bot()
+    db = await make_db_only()
     try:
         async with db.session() as s:
             rows = (
@@ -303,22 +326,198 @@ async def cmd_equity(args, console: Console) -> int:
                 )
             ).scalars().all()
         if not rows:
-            console.print("[dim]No equity snapshots yet.[/]")
+            console.print("[dim]No equity snapshots yet — run `tradbot evaluate` to record one.[/]")
             return 0
         table = Table(title=f"Last {len(rows)} equity snapshots", expand=False)
         table.add_column("ts")
         table.add_column("equity", justify="right")
-        table.add_column("daily PnL", justify="right")
+        table.add_column("Δ", justify="right")
+        prev = None
         for snap in reversed(rows):
+            delta = ""
+            if prev is not None:
+                d = float(snap.equity_usdt - prev)
+                if d > 0:
+                    delta = f"[green]+${d:,.2f}[/]"
+                elif d < 0:
+                    delta = f"[red]${d:,.2f}[/]"
+                else:
+                    delta = "[dim]flat[/]"
             table.add_row(
                 snap.ts.strftime("%Y-%m-%d %H:%M"),
                 f"${snap.equity_usdt:,.2f}",
-                f"${snap.realized_pnl_daily:+,.2f}" if snap.realized_pnl_daily else "—",
+                delta,
             )
+            prev = snap.equity_usdt
         console.print(table)
+    finally:
+        await db.close()
+    return 0
+
+
+async def cmd_signal(args, console: Console) -> int:
+    """Show what the signal says RIGHT NOW without trading. Read-only."""
+    bot, ex, db = await make_bot()
+    try:
+        _mode_banner(console)
+        with console.status("Fetching daily closes and evaluating signal..."):
+            try:
+                sig = await bot.evaluate()
+            except Exception as e:
+                console.print(f"[red]✗[/] Couldn't fetch closes: {e}")
+                return 1
+        colour = "cyan" if sig.state == TrendState.IN else "yellow"
+        table = Table(show_header=False, expand=False, border_style="dim")
+        table.add_column(style="dim")
+        table.add_column(style="bold")
+        table.add_row("Symbol", SYMBOL)
+        table.add_row("SMA window", str(SMA_WINDOW))
+        table.add_row("Entry buffer", f"{ENTRY_BUFFER:.2%}")
+        table.add_row("Latest close", f"${sig.close:,.2f}")
+        table.add_row(f"SMA-{SMA_WINDOW}", f"${sig.sma:,.2f}" if sig.sma > 0 else "—")
+        table.add_row("Signal", f"[{colour}]{sig.state.value.upper()}[/]")
+        table.add_row("Reason", sig.reason)
+        console.print(Panel(table, title="Current signal", expand=False))
+        console.print(
+            "[dim]This is read-only. Use `tradbot evaluate` to act on the signal.[/]"
+        )
     finally:
         await ex.close()
         await db.close()
+    return 0
+
+
+async def cmd_config(args, console: Console) -> int:
+    """Print the resolved config and where it comes from."""
+    table = Table(title="trad-bot config", expand=False)
+    table.add_column("setting")
+    table.add_column("value")
+    table.add_column("source")
+    env_or_default = lambda name, default: ("env" if name in os.environ else "default")
+    table.add_row("Symbol", SYMBOL, env_or_default("SIMPLE_BOT_SYMBOL", "BTC/USDT"))
+    table.add_row("Mode", "LIVE" if LIVE else "PAPER", env_or_default("SIMPLE_BOT_LIVE", "false"))
+    table.add_row("Starting balance", f"${STARTING_USDT}", env_or_default("SIMPLE_BOT_STARTING_USDT", "1000"))
+    table.add_row("SMA window", str(SMA_WINDOW), env_or_default("SIMPLE_BOT_SMA_WINDOW", "200"))
+    table.add_row("Entry buffer", f"{ENTRY_BUFFER:.2%}", env_or_default("SIMPLE_BOT_ENTRY_BUFFER", "0.01"))
+    table.add_row("Exit buffer", f"{EXIT_BUFFER:.2%}", env_or_default("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
+    stop_label = f"{TRAILING_STOP:.0%}" if TRAILING_STOP > 0 else "off"
+    table.add_row("Trailing stop", stop_label, env_or_default("SIMPLE_BOT_TRAILING_STOP", "0"))
+    table.add_row("DB path", DB_PATH, env_or_default("SIMPLE_BOT_DB", "data/simple_bot.db"))
+    console.print(table)
+
+    env_path = _PROJECT_ROOT / ".env"
+    if env_path.exists():
+        console.print(f"\n[dim].env file: {env_path}[/]")
+    else:
+        console.print(
+            f"\n[yellow]No .env file at {env_path} — defaults are in effect.[/]"
+        )
+    return 0
+
+
+async def cmd_reset(args, console: Console) -> int:
+    """Delete the paper-mode database so you can start fresh."""
+    if LIVE and not args.force:
+        console.print(
+            "[red]✗[/] Refusing to reset in LIVE mode. The DB contains real trade "
+            "history. Pass --force if you really mean it (your trades stay on Binance)."
+        )
+        return 1
+    db_path = Path(DB_PATH)
+    if not db_path.exists():
+        console.print(f"[dim]No DB at {db_path} — already reset.[/]")
+        return 0
+    if not args.yes:
+        console.print(f"About to delete {db_path}. Pass --yes to confirm.")
+        return 1
+    db_path.unlink()
+    console.print(f"[green]✓[/] Removed {db_path}. Next command will create a fresh DB.")
+    return 0
+
+
+async def cmd_watch(args, console: Console) -> int:
+    """Refresh status every N seconds until Ctrl+C."""
+    from rich.live import Live
+
+    while True:
+        try:
+            bot, ex, db = await make_bot()
+            try:
+                s = await bot.status()
+                table = Table(show_header=False, expand=False, border_style="dim")
+                table.add_column(style="dim")
+                table.add_column(style="bold")
+                table.add_row("Symbol", SYMBOL)
+                table.add_row("Mode", "[red]LIVE[/]" if LIVE else "[green]PAPER[/]")
+                table.add_row("Trading", "[green]ON[/]" if s.enabled else "[yellow]OFF[/]")
+                table.add_row(
+                    "Position",
+                    f"[cyan]IN[/]" if s.current_state == TrendState.IN else "[dim]OUT[/]",
+                )
+                if s.last_price:
+                    table.add_row(f"{s.base_asset} price", f"${s.last_price:,.2f}")
+                eq = s.usdt_qty + s.btc_qty * s.last_price
+                table.add_row(f"Equity ({s.quote_asset})", f"${eq:,.2f}")
+                table.add_row(s.base_asset, f"{s.btc_qty:.8f}")
+                table.add_row(s.quote_asset, f"{s.usdt_qty:,.4f}")
+                from datetime import datetime, timezone
+
+                table.add_row("Last refresh", datetime.now(timezone.utc).strftime("%H:%M:%S UTC"))
+                console.clear()
+                console.print(Panel(table, title=f"BTC trend bot · refresh every {args.interval}s · Ctrl+C to quit", expand=False))
+            finally:
+                await ex.close()
+                await db.close()
+        except KeyboardInterrupt:
+            console.print("\n[dim]Stopped watching.[/]")
+            return 0
+        except Exception as e:
+            console.print(f"[red]Refresh error:[/] {e}")
+        try:
+            await asyncio.sleep(args.interval)
+        except KeyboardInterrupt:
+            console.print("\n[dim]Stopped watching.[/]")
+            return 0
+
+
+async def cmd_backtest(args, console: Console) -> int:
+    """Run the 5-year backtest and print the comparison table."""
+    from src.backtest.trend_backtest import backtest_sma_trend
+    from src.backtest.trend_metrics import compute_full_metrics
+    from scripts.backtest_trend import _fetch_daily
+
+    console.print(f"[bold]Fetching {args.years}y of daily {SYMBOL} closes...[/]")
+    try:
+        closes = await _fetch_daily(SYMBOL, args.years)
+    except Exception as e:
+        console.print(f"[red]✗[/] Couldn't fetch history: {e}")
+        return 1
+    if closes.empty:
+        console.print("[red]✗[/] No data returned.")
+        return 1
+    console.print(
+        f"Got {len(closes)} daily closes from {closes.index[0].date()} to {closes.index[-1].date()}\n"
+    )
+    result = backtest_sma_trend(
+        closes,
+        initial_equity=Decimal(str(args.equity)),
+        sma_window=SMA_WINDOW,
+        entry_buffer_pct=ENTRY_BUFFER,
+        exit_buffer_pct=EXIT_BUFFER,
+        trailing_stop_pct=TRAILING_STOP,
+    )
+    m = compute_full_metrics(result)
+    table = Table(title=f"{args.years}y backtest of current config", expand=False)
+    table.add_column("metric")
+    table.add_column("strategy", justify="right")
+    table.add_column("buy & hold", justify="right")
+    table.add_row("Initial", f"${m.initial_equity:,.2f}", f"${m.initial_equity:,.2f}")
+    table.add_row("Final", f"${m.final_equity:,.2f}", "")
+    table.add_row("Net APR", f"{m.net_apr:.2%}", f"{m.buy_and_hold_apr:.2%}")
+    table.add_row("Sharpe", f"{m.sharpe:.2f}", f"{m.buy_and_hold_sharpe:.2f}")
+    table.add_row("Max DD", f"{m.max_drawdown:.2%}", f"{m.buy_and_hold_max_dd:.2%}")
+    table.add_row("Trades", str(m.n_trades), "1")
+    console.print(table)
     return 0
 
 
@@ -341,12 +540,26 @@ def main() -> None:
         action="store_true",
         help="Evaluate even when trading is disabled (read-only; no orders).",
     )
-    p_flat = sub.add_parser("flatten", help=f"Sell all base to quote currency.")
+    sub.add_parser("signal", help="Show what the signal says NOW (read-only).")
+    p_flat = sub.add_parser("flatten", help="Sell all base to quote currency.")
     p_flat.add_argument("--yes", action="store_true", help="Confirm the sale.")
     p_trd = sub.add_parser("trades", help="List recent orders.")
     p_trd.add_argument("--limit", type=int, default=20)
     p_eq = sub.add_parser("equity", help="Show recent equity snapshots.")
     p_eq.add_argument("--limit", type=int, default=20)
+    sub.add_parser("config", help="Show resolved config + .env location.")
+    p_reset = sub.add_parser("reset", help="Delete the paper-mode DB.")
+    p_reset.add_argument("--yes", action="store_true", help="Confirm.")
+    p_reset.add_argument(
+        "--force",
+        action="store_true",
+        help="Reset even in LIVE mode (loses trade history; Binance is untouched).",
+    )
+    p_watch = sub.add_parser("watch", help="Refresh status every N seconds.")
+    p_watch.add_argument("--interval", type=int, default=30)
+    p_bt = sub.add_parser("backtest", help="Run a backtest with the current config.")
+    p_bt.add_argument("--years", type=int, default=5)
+    p_bt.add_argument("--equity", type=float, default=1000)
 
     args = parser.parse_args()
     console = Console()
@@ -355,9 +568,14 @@ def main() -> None:
         "start": cmd_start,
         "stop": cmd_stop,
         "evaluate": cmd_evaluate,
+        "signal": cmd_signal,
         "flatten": cmd_flatten,
         "trades": cmd_trades,
         "equity": cmd_equity,
+        "config": cmd_config,
+        "reset": cmd_reset,
+        "watch": cmd_watch,
+        "backtest": cmd_backtest,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))
