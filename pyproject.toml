@@ -29,6 +29,7 @@ dependencies = [
     "uvloop>=0.19; sys_platform != 'win32'",
     "tenacity>=8.2",
     "rich>=13.7",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

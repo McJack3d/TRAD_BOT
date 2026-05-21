@@ -27,6 +27,15 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Load .env (BINANCE_API_KEY etc.) from the project root so the user
+# doesn't have to remember to `source` it every time.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(_PROJECT_ROOT / ".env")
+except ImportError:
+    pass
+
 import pandas as pd
 import streamlit as st
 
