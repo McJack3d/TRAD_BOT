@@ -47,6 +47,7 @@ dashboard = [
 
 [project.scripts]
 trad-bot = "src.main:cli"
+tradbot = "scripts.tradbot:main"
 trad-backtest = "scripts.run_backtest:main"
 trad-dry-run = "scripts.run_dry_run:main"
 trad-tax-export = "scripts.tax_export:main"

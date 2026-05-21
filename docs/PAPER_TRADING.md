@@ -68,27 +68,36 @@ Interpretation:
 
 ---
 
-## 2. Local paper trading
+## 2. Local paper trading (terminal CLI)
+
+The CLI is the recommended interface for the daily-eval trend strategy —
+no live dashboard needed, just one-shot commands.
 
 ```bash
 source .venv/bin/activate
-streamlit run src/app/streamlit_app.py
-# → http://localhost:8501
+
+python -m scripts.tradbot status      # current state
+python -m scripts.tradbot start       # enable trading
+python -m scripts.tradbot evaluate    # fetch + evaluate + trade
+python -m scripts.tradbot trades      # recent orders
+python -m scripts.tradbot equity      # equity snapshots
+python -m scripts.tradbot stop        # disable trading
+python -m scripts.tradbot flatten --yes  # sell all to quote
 ```
 
-The page uses **real-time Binance prices** (public REST, no key needed)
+Paper mode uses **real-time Binance prices** (public REST, no key needed)
 and a **simulated $1,000 portfolio** that tracks BTC and USDT
-balances. Click **Start trading**, then **Evaluate now** to take the
-first signal. Each evaluation:
+balances. Run `tradbot start` then `tradbot evaluate` to take the
+first signal. Each `evaluate`:
 
 - Fetches the current BTC price.
 - Computes the SMA-50 signal from the last 55 daily closes.
 - Flips position if the signal disagrees with current holdings.
 - Snapshots the equity to the local DB.
 
-The equity curve plot in the right pane updates with every evaluation.
-Leave the terminal running for a week, click *Evaluate now* once a day,
-and you'll have a real paper-trading record on real market data.
+Run `tradbot equity` to see how the simulated portfolio has tracked
+across evaluations. Run `tradbot evaluate` once a day for a week or two
+to build a real paper-trading record on live market data.
 
 To reset the paper portfolio:
 
@@ -99,8 +108,13 @@ rm data/simple_bot.db
 To start with a different paper balance:
 
 ```bash
-SIMPLE_BOT_STARTING_USDT=5000 streamlit run src/app/streamlit_app.py
+SIMPLE_BOT_STARTING_USDT=5000 python -m scripts.tradbot status
 ```
+
+(Or put `SIMPLE_BOT_STARTING_USDT=5000` in your `.env`.)
+
+There's also an older Streamlit UI at `src/app/streamlit_app.py` if you
+prefer a web page — but the CLI is the supported path.
 
 ---
 
