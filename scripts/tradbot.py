@@ -80,6 +80,9 @@ ENTRY_BUFFER = float(os.environ.get("SIMPLE_BOT_ENTRY_BUFFER", "0.01"))
 EXIT_BUFFER = float(os.environ.get("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
 TRAILING_STOP = float(os.environ.get("SIMPLE_BOT_TRAILING_STOP", "0"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
+# Sentiment: weight 0 = off (default). Set SIMPLE_BOT_SENTIMENT_WEIGHT
+# to e.g. 0.03 to let the Fear & Greed factor shift the SMA thresholds.
+SENTIMENT_WEIGHT = float(os.environ.get("SIMPLE_BOT_SENTIMENT_WEIGHT", "0"))
 
 
 # ---- bot construction -----------------------------------------------
@@ -126,6 +129,12 @@ async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ig
 
     from src.notify import best_notifier
 
+    sentiment_source = None
+    if SENTIMENT_WEIGHT > 0:
+        from src.sentiment.fear_greed import FearGreedSentiment
+
+        sentiment_source = FearGreedSentiment()
+
     bot = SimpleBot(
         exchange=ex,
         db=db,
@@ -135,6 +144,8 @@ async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ig
         exit_buffer_pct=EXIT_BUFFER,
         trailing_stop_pct=TRAILING_STOP,
         notifier=best_notifier(),
+        sentiment_source=sentiment_source,
+        sentiment_weight=SENTIMENT_WEIGHT,
     )
     return bot, ex, db
 
@@ -463,6 +474,8 @@ async def cmd_signal(args, console: Console) -> int:
         table.add_row("Entry buffer", f"{ENTRY_BUFFER:.2%}")
         table.add_row("Latest close", f"${sig.close:,.2f}")
         table.add_row(f"SMA-{SMA_WINDOW}", f"${sig.sma:,.2f}" if sig.sma > 0 else "—")
+        if SENTIMENT_WEIGHT > 0 and sig.sentiment is not None:
+            table.add_row("Sentiment factor", f"{sig.sentiment:+.2f}")
         table.add_row("Signal", f"[{colour}]{sig.state.value.upper()}[/]")
         table.add_row("Reason", sig.reason)
         console.print(Panel(table, title="Current signal", expand=False))
@@ -472,6 +485,45 @@ async def cmd_signal(args, console: Console) -> int:
     finally:
         await ex.close()
         await db.close()
+    return 0
+
+
+async def cmd_sentiment(args, console: Console) -> int:
+    """Show the current Crypto Fear & Greed reading. Read-only, no key."""
+    from src.sentiment.fear_greed import FearGreedSentiment
+
+    with console.status("Fetching Crypto Fear & Greed Index..."):
+        try:
+            reading = await FearGreedSentiment().current()
+        except Exception as e:
+            console.print(f"[red]✗[/] Couldn't fetch sentiment: {e}")
+            return 1
+    factor = reading.value
+    if factor > 0.3:
+        colour = "green"
+    elif factor < -0.3:
+        colour = "red"
+    else:
+        colour = "yellow"
+    table = Table(show_header=False, expand=False, border_style="dim")
+    table.add_column(style="dim")
+    table.add_column(style="bold")
+    table.add_row("Source", "Crypto Fear & Greed Index (alternative.me)")
+    table.add_row("Raw index", f"{reading.raw:.0f} / 100")
+    table.add_row("Classification", f"[{colour}]{reading.label}[/]")
+    table.add_row("Sentiment factor", f"[{colour}]{factor:+.2f}[/]  (range -1..+1)")
+    table.add_row("As of", reading.ts.isoformat())
+    if SENTIMENT_WEIGHT > 0:
+        shift = factor * SENTIMENT_WEIGHT
+        table.add_row(
+            "Effect on entry buffer",
+            f"{-shift:+.3f}  (weight {SENTIMENT_WEIGHT:.0%})",
+        )
+    else:
+        table.add_row(
+            "Effect", "[dim]none — SIMPLE_BOT_SENTIMENT_WEIGHT is 0 (off)[/]"
+        )
+    console.print(Panel(table, title="Sentiment", expand=False))
     return 0
 
 
@@ -490,6 +542,10 @@ async def cmd_config(args, console: Console) -> int:
     table.add_row("Exit buffer", f"{EXIT_BUFFER:.2%}", env_or_default("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
     stop_label = f"{TRAILING_STOP:.0%}" if TRAILING_STOP > 0 else "off"
     table.add_row("Trailing stop", stop_label, env_or_default("SIMPLE_BOT_TRAILING_STOP", "0"))
+    sent_label = (
+        f"Fear&Greed, weight {SENTIMENT_WEIGHT:.0%}" if SENTIMENT_WEIGHT > 0 else "off"
+    )
+    table.add_row("Sentiment", sent_label, env_or_default("SIMPLE_BOT_SENTIMENT_WEIGHT", "0"))
     table.add_row("DB path", DB_PATH, env_or_default("SIMPLE_BOT_DB", "data/simple_bot.db"))
     console.print(table)
 
@@ -704,6 +760,7 @@ def main() -> None:
         help="Evaluate even when trading is disabled (read-only; no orders).",
     )
     sub.add_parser("signal", help="Show what the signal says NOW (read-only).")
+    sub.add_parser("sentiment", help="Show the current Fear & Greed reading.")
     p_flat = sub.add_parser("flatten", help="Sell all base to quote currency.")
     p_flat.add_argument("--yes", action="store_true", help="Confirm the sale.")
     p_trd = sub.add_parser("trades", help="List recent orders.")
@@ -747,6 +804,7 @@ def main() -> None:
         "stop": cmd_stop,
         "evaluate": cmd_evaluate,
         "signal": cmd_signal,
+        "sentiment": cmd_sentiment,
         "flatten": cmd_flatten,
         "trades": cmd_trades,
         "equity": cmd_equity,

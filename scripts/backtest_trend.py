@@ -95,6 +95,17 @@ def _print_table(title: str, stats: dict, n_trades: int, equity: float) -> None:
     console.print(table)
 
 
+def _fetch_sentiment():
+    """Fetch the full Fear & Greed history as a date-indexed factor
+    series. Returns None on any failure (backtest still runs SMA-only)."""
+    from src.sentiment.fear_greed import FearGreedSentiment
+
+    try:
+        return asyncio.run(FearGreedSentiment().history())
+    except Exception:
+        return None
+
+
 def _run(
     years: int,
     sma: int,
@@ -105,9 +116,24 @@ def _run(
     entry_buffer: float,
     exit_buffer: float,
     trailing_stop: float,
+    sentiment_weight: float,
 ) -> None:
     configure_logging("WARNING")
     console = Console()
+
+    sentiment_series = None
+    if sentiment_weight > 0:
+        console.print("[bold]Fetching Crypto Fear & Greed history...[/]")
+        sentiment_series = _fetch_sentiment()
+        if sentiment_series is None or sentiment_series.empty:
+            console.print(
+                "[yellow]Couldn't fetch sentiment history — running SMA-only.[/]"
+            )
+            sentiment_weight = 0.0
+        else:
+            console.print(
+                f"Got {len(sentiment_series)} daily sentiment readings.\n"
+            )
 
     if len(symbols) == 1:
         sym = symbols[0]
@@ -128,11 +154,15 @@ def _run(
             entry_buffer_pct=entry_buffer,
             exit_buffer_pct=exit_buffer,
             trailing_stop_pct=trailing_stop,
+            sentiment_series=sentiment_series,
+            sentiment_weight=sentiment_weight,
         )
         stats = summarize(result)
         title = f"SMA-{sma} trend follower on {sym}"
         if entry_buffer or exit_buffer:
             title += f"  (buffers: +{entry_buffer:.2%}/-{exit_buffer:.2%})"
+        if sentiment_weight > 0:
+            title += f"  [+sentiment w={sentiment_weight:.0%}]"
         _print_table(title, stats, len(result.trades), equity)
         console.print("\n[dim]First 5 trades:[/]")
         for t in result.trades[:5]:
@@ -202,6 +232,14 @@ def main() -> None:
              "want it on at all, but the SMA exit-buffer already provides the "
              "downside protection.",
     )
+    parser.add_argument(
+        "--sentiment-weight",
+        type=float,
+        default=0.0,
+        help="Fear & Greed sentiment weight. Default 0 = off. e.g. 0.03 lets "
+             "max-bullish sentiment shift the entry buffer by 3 points. Compare "
+             "the result against the same run with 0 to see if it helps.",
+    )
     args = parser.parse_args()
     symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     _run(
@@ -211,6 +249,7 @@ def main() -> None:
         fee_bps=args.fee_bps,
         slip_bps=args.slip_bps,
         trailing_stop=args.trailing_stop,
+        sentiment_weight=args.sentiment_weight,
         symbols=symbols,
         entry_buffer=args.entry_buffer,
         exit_buffer=args.exit_buffer,

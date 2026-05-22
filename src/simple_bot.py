@@ -58,6 +58,8 @@ class SimpleBot:
         exit_buffer_pct: float = 0.01,
         trailing_stop_pct: float = 0.0,
         notifier=None,
+        sentiment_source=None,
+        sentiment_weight: float = 0.0,
     ):
         from src.notify import noop_notifier
 
@@ -69,9 +71,11 @@ class SimpleBot:
         self.entry_buffer_pct = entry_buffer_pct
         self.exit_buffer_pct = exit_buffer_pct
         self.trailing_stop_pct = trailing_stop_pct
-        # `system_status.halt_reason` doubles as our state cache so we can
-        # persist current TrendState across restarts without adding a schema.
-        # Format: "trend:<state>|enabled:<true|false>|signal_reason:<...>"
+        # Optional sentiment source. When set (and sentiment_weight > 0),
+        # each evaluation tilts the SMA thresholds by the current factor.
+        self.sentiment_source = sentiment_source
+        self.sentiment_weight = sentiment_weight
+        self._last_sentiment = None  # last SentimentReading, for status display
         self._last_signal: TrendSignal | None = None
         self._last_evaluated: datetime | None = None
 
@@ -91,13 +95,30 @@ class SimpleBot:
 
     # ---- evaluation + trading ---------------------------------------
 
+    async def _current_sentiment(self) -> float | None:
+        """Fetch the current sentiment factor, or None if no source is
+        configured or the fetch fails. A failed fetch must never block a
+        trade — we just fall back to the plain SMA signal."""
+        if self.sentiment_source is None or self.sentiment_weight <= 0:
+            return None
+        try:
+            reading = await self.sentiment_source.current()
+        except Exception as e:
+            log.warning("simple_bot.sentiment.fetch_failed", error=str(e))
+            return None
+        self._last_sentiment = reading
+        return reading.value
+
     async def evaluate(self) -> TrendSignal:
         closes = await self._fetch_daily_closes()
+        sentiment = await self._current_sentiment()
         signal = evaluate_trend(
             closes,
             sma_window=self.sma_window,
             entry_buffer_pct=self.entry_buffer_pct,
             exit_buffer_pct=self.exit_buffer_pct,
+            sentiment=sentiment,
+            sentiment_weight=self.sentiment_weight,
         )
         self._last_signal = signal
         self._last_evaluated = datetime.now(UTC)

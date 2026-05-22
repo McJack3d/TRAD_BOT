@@ -34,6 +34,8 @@ def backtest_sma_trend(
     exit_buffer_pct: float = 0.0,
     trailing_stop_pct: float = 0.0,
     trade_start: pd.Timestamp | None = None,
+    sentiment_series: pd.Series | None = None,
+    sentiment_weight: float = 0.0,
 ) -> TrendBacktestResult:
     """Run the SMA trend strategy on a series of daily closes.
 
@@ -45,6 +47,12 @@ def backtest_sma_trend(
     today's close drops by more than `trailing_stop_pct` from that peak,
     we force-exit even if the SMA signal still says IN. Re-entry requires
     a fresh IN signal — this avoids ping-ponging on a single drawdown.
+
+    `sentiment_series` (optional, DatetimeIndex of [-1, +1] factors) plus
+    `sentiment_weight` tilt the SMA entry/exit thresholds. For each bar
+    the sentiment AS OF that date (most recent value at or before the
+    bar — no lookahead) is used. With sentiment_weight=0 sentiment is
+    ignored.
     """
     cost_bps = fee_bps + slippage_bps
     equity = initial_equity
@@ -55,6 +63,26 @@ def backtest_sma_trend(
     rows: list[dict] = []
     trades: list[dict] = []
     initial_close = Decimal(str(daily_closes.iloc[0]))
+
+    # Normalize the sentiment index to UTC-aware timestamps once so the
+    # as-of lookup below is cheap and lookahead-free.
+    sentiment_sorted: pd.Series | None = None
+    if sentiment_series is not None and not sentiment_series.empty:
+        sentiment_sorted = sentiment_series.copy()
+        sentiment_sorted.index = pd.to_datetime(sentiment_sorted.index, utc=True)
+        sentiment_sorted = sentiment_sorted.sort_index()
+
+    def _sentiment_asof(ts) -> float | None:
+        if sentiment_sorted is None:
+            return None
+        ts_utc = pd.Timestamp(ts)
+        if ts_utc.tzinfo is None:
+            ts_utc = ts_utc.tz_localize("UTC")
+        prior = sentiment_sorted.loc[:ts_utc]
+        if prior.empty:
+            return None
+        return float(prior.iloc[-1])
+
 
     def _enter(close: Decimal, ts) -> None:
         nonlocal equity, btc, position, peak_since_entry
@@ -131,6 +159,8 @@ def backtest_sma_trend(
                 sma_window=sma_window,
                 entry_buffer_pct=entry_buffer_pct,
                 exit_buffer_pct=exit_buffer_pct,
+                sentiment=_sentiment_asof(ts),
+                sentiment_weight=sentiment_weight,
             )
             if signal.state != position and not (
                 signal.state == TrendState.IN and block_entry_this_bar

@@ -131,3 +131,68 @@ async def test_state_unchanged_when_go_in_fails(tmp_path: Path) -> None:
     assert await bot.current_state() == TrendState.OUT
     await db.close()
 
+
+
+class _StubSentiment:
+    """Sentiment source stub for tests — returns a fixed factor."""
+
+    def __init__(self, value: float):
+        from datetime import UTC, datetime
+
+        from src.sentiment.base import SentimentReading
+
+        self._reading = SentimentReading(
+            value=value, label="stub", raw=50.0, source="stub",
+            ts=datetime.now(UTC),
+        )
+
+    async def current(self):
+        return self._reading
+
+
+async def test_bot_applies_sentiment_to_signal(tmp_path: Path) -> None:
+    """A bullish sentiment source should lower the entry bar enough to
+    flip a marginal OUT into IN."""
+    db = Database(str(tmp_path / "s.db"))
+    await db.init(starting_equity=Decimal("1000"))
+    ex = FakeExchange(starting_usdt=Decimal("1000"))
+    ex.set_ticker("BTC/USDT", "spot", Decimal("60000"))
+
+    # Marginal close: 49 at 50k, last at 50.4k → just below the 1% bar.
+    closes = [50000.0] * 49 + [50400.0]
+
+    plain = SimpleBot(exchange=ex, db=db, symbol="BTC/USDT", sma_window=50)
+    plain.closes_override = closes
+    sig_plain = await plain.evaluate()
+    assert sig_plain.state == TrendState.OUT
+
+    bullish = SimpleBot(
+        exchange=ex, db=db, symbol="BTC/USDT", sma_window=50,
+        sentiment_source=_StubSentiment(1.0), sentiment_weight=0.03,
+    )
+    bullish.closes_override = closes
+    sig_bull = await bullish.evaluate()
+    assert sig_bull.state == TrendState.IN
+    assert sig_bull.sentiment == 1.0
+    await db.close()
+
+
+async def test_bot_sentiment_fetch_failure_falls_back(tmp_path: Path) -> None:
+    """If the sentiment source raises, evaluate() must still produce a
+    plain-SMA signal rather than crashing."""
+    class _Boom:
+        async def current(self):
+            raise RuntimeError("sentiment API down")
+
+    db = Database(str(tmp_path / "s.db"))
+    await db.init(starting_equity=Decimal("1000"))
+    ex = FakeExchange(starting_usdt=Decimal("1000"))
+    ex.set_ticker("BTC/USDT", "spot", Decimal("60000"))
+    bot = SimpleBot(
+        exchange=ex, db=db, symbol="BTC/USDT", sma_window=50,
+        sentiment_source=_Boom(), sentiment_weight=0.03,
+    )
+    bot.closes_override = [50000.0] * 49 + [70000.0]
+    sig = await bot.evaluate()
+    assert sig.state == TrendState.IN  # plain SMA still works
+    await db.close()
