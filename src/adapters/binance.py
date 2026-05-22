@@ -62,9 +62,22 @@ class BinanceAdapter(ExchangeAdapter):
 
     # ---- account ------------------------------------------------------
     async def fetch_balances(self) -> dict[str, Balance]:
+        """Fetch spot + perp balances.
+
+        Each leg is queried independently. If one leg fails — most
+        commonly the perp/futures account when the API key has no
+        futures permission (the trend bot deliberately runs spot-only
+        keys) — that leg is skipped and the other still returns. We only
+        raise if BOTH legs fail.
+        """
         out: dict[str, Balance] = {}
+        errors: list[str] = []
         for leg, client in (("spot", self.spot), ("perp", self.perp)):
-            bal = await client.fetch_balance()
+            try:
+                bal = await client.fetch_balance()
+            except Exception as e:
+                errors.append(f"{leg}: {e}")
+                continue
             for asset, info in bal.get("total", {}).items():
                 if info is None:
                     continue
@@ -73,6 +86,8 @@ class BinanceAdapter(ExchangeAdapter):
                 used = _d(bal["used"].get(asset))
                 total = _d(info)
                 out[key] = Balance(asset=asset, free=free, used=used, total=total)
+        if not out and errors:
+            raise RuntimeError(f"all balance legs failed: {'; '.join(errors)}")
         return out
 
     async def fetch_positions(self) -> list[ExchangePosition]:
