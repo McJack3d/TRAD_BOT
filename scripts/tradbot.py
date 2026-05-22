@@ -61,6 +61,8 @@ try:
 except ImportError:
     pass
 
+from datetime import UTC
+
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -69,7 +71,6 @@ from src.simple_bot import SimpleBot
 from src.state.db import Database
 from src.state.models import StateSnapshot
 from src.strategy.sma_trend import TrendState
-
 
 DB_PATH = os.environ.get("SIMPLE_BOT_DB", "data/simple_bot.db")
 LIVE = os.environ.get("SIMPLE_BOT_LIVE", "false").lower() == "true"
@@ -91,7 +92,7 @@ async def make_db_only() -> Database:
     return db
 
 
-async def make_bot() -> tuple[SimpleBot, "ExchangeAdapter", Database]:  # type: ignore[name-defined]
+async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ignore[name-defined]
     db = await make_db_only()
 
     if LIVE:
@@ -165,7 +166,15 @@ async def cmd_status(args, console: Console) -> int:
     bot, ex, db = await make_bot()
     try:
         _mode_banner(console)
-        s = await bot.status()
+        try:
+            s = await bot.status()
+        except Exception as e:
+            console.print(f"[red]✗[/] Couldn't fetch status: {e}")
+            return 1
+        # Pull post-entry meta if we're IN so we can show distance to stop.
+        meta = await bot._get_meta()
+        peak = Decimal(meta.get("peak_since_entry", "0") or "0")
+
         table = Table(show_header=False, expand=False, border_style="dim")
         table.add_column(style="dim")
         table.add_column(style="bold")
@@ -179,6 +188,24 @@ async def cmd_status(args, console: Console) -> int:
             table.add_row(f"{s.base_asset} price", f"${s.last_price:,.2f}")
         equity = s.usdt_qty + s.btc_qty * s.last_price
         table.add_row(f"Equity ({s.quote_asset})", f"${equity:,.2f}")
+
+        # If IN, surface useful position economics.
+        if s.current_state == TrendState.IN and s.last_price > 0 and s.btc_qty > 0:
+            position_value = s.btc_qty * s.last_price
+            table.add_row("", "")
+            table.add_row("Position value", f"${position_value:,.2f}")
+            if peak > 0:
+                pullback = (peak - s.last_price) / peak * 100 if peak > 0 else Decimal("0")
+                table.add_row("Peak since entry", f"${peak:,.2f}")
+                table.add_row("Pullback from peak", f"{pullback:.2f}%")
+                if TRAILING_STOP > 0:
+                    trigger = peak * (Decimal("1") - Decimal(str(TRAILING_STOP)))
+                    remaining = (s.last_price - trigger) / s.last_price * 100 if s.last_price else Decimal("0")
+                    table.add_row(
+                        "Trailing stop trigger",
+                        f"${trigger:,.2f}  ({remaining:.2f}% away)",
+                    )
+
         table.add_row("")
         table.add_row(s.base_asset, f"{s.btc_qty:.8f}")
         table.add_row(s.quote_asset, f"{s.usdt_qty:,.4f}")
@@ -263,16 +290,27 @@ async def cmd_flatten(args, console: Console) -> int:
     bot, ex, db = await make_bot()
     try:
         _mode_banner(console)
-        if not args.yes:
-            s = await bot.status()
+        s = await bot.status()
+        if s.btc_qty <= 0:
             console.print(
-                f"About to sell {s.btc_qty} {s.base_asset} → {s.quote_asset}."
+                f"[dim]Nothing to flatten — current {s.base_asset} balance is 0.[/]"
             )
-            console.print("Pass --yes to confirm.")
+            return 0
+        if not args.yes:
+            console.print(
+                f"About to sell [bold]{s.btc_qty:.8f} {s.base_asset}[/] "
+                f"(≈ ${s.btc_qty * s.last_price:,.2f}) → {s.quote_asset}."
+            )
+            console.print("Re-run with --yes to confirm.")
             return 1
         with console.status("Selling..."):
             await bot.flatten_now()
-        console.print(f"[green]✓[/] Flattened to {SYMBOL.split('/')[1]}.")
+        # Status after.
+        after = await bot.status()
+        console.print(
+            f"[green]✓[/] Flattened to {s.quote_asset}. "
+            f"{after.quote_asset} balance: ${after.usdt_qty:,.2f}"
+        )
     finally:
         await ex.close()
         await db.close()
@@ -301,14 +339,45 @@ async def cmd_trades(args, console: Console) -> int:
         table.add_column("side")
         table.add_column("qty", justify="right")
         table.add_column("avg price", justify="right")
+        table.add_column("notional", justify="right")
+        table.add_column("PnL", justify="right")
         table.add_column("status")
-        for o in reversed(rows):
+
+        # Pair buys with subsequent sells (oldest-first) to compute realized
+        # PnL per round-trip. The display below stays newest-first.
+        chronological = list(reversed(rows))
+        pnl_by_order_id: dict[int, str] = {}
+        last_buy_price: Decimal | None = None
+        last_buy_qty: Decimal | None = None
+        for o in chronological:
+            if o.side.value == "buy" and o.filled_qty:
+                last_buy_price = o.avg_fill_price
+                last_buy_qty = o.filled_qty
+            elif o.side.value == "sell" and last_buy_price and o.avg_fill_price:
+                qty = min(last_buy_qty or o.filled_qty, o.filled_qty)
+                pnl = (o.avg_fill_price - last_buy_price) * qty
+                pct = (o.avg_fill_price / last_buy_price - 1) * 100
+                colour = "green" if pnl >= 0 else "red"
+                pnl_by_order_id[o.id] = f"[{colour}]${pnl:+,.2f}  ({pct:+.2f}%)[/]"
+                last_buy_price = None
+                last_buy_qty = None
+
+        for o in chronological[::-1]:  # newest first for display
+            notional = (
+                f"${o.filled_qty * o.avg_fill_price:,.2f}"
+                if o.avg_fill_price and o.filled_qty
+                else "—"
+            )
+            pnl_cell = pnl_by_order_id.get(o.id, "—")
+            side_colour = "green" if o.side.value == "buy" else "yellow"
             table.add_row(
                 o.submitted_at.strftime("%Y-%m-%d %H:%M"),
                 o.symbol,
-                o.side.value,
+                f"[{side_colour}]{o.side.value}[/]",
                 f"{o.filled_qty:.8f}",
                 f"${o.avg_fill_price:,.2f}" if o.avg_fill_price else "—",
+                notional,
+                pnl_cell,
                 o.status.value,
             )
         console.print(table)
@@ -331,12 +400,15 @@ async def cmd_equity(args, console: Console) -> int:
         if not rows:
             console.print("[dim]No equity snapshots yet — run `tradbot evaluate` to record one.[/]")
             return 0
+        chronological = list(reversed(rows))
+        baseline = chronological[0].equity_usdt
         table = Table(title=f"Last {len(rows)} equity snapshots", expand=False)
         table.add_column("ts")
         table.add_column("equity", justify="right")
         table.add_column("Δ", justify="right")
+        table.add_column("total return", justify="right")
         prev = None
-        for snap in reversed(rows):
+        for snap in chronological:
             delta = ""
             if prev is not None:
                 d = float(snap.equity_usdt - prev)
@@ -346,13 +418,26 @@ async def cmd_equity(args, console: Console) -> int:
                     delta = f"[red]${d:,.2f}[/]"
                 else:
                     delta = "[dim]flat[/]"
+            total_ret_pct = (
+                float(snap.equity_usdt / baseline - 1) * 100 if baseline > 0 else 0.0
+            )
+            if total_ret_pct > 0:
+                tr_cell = f"[green]{total_ret_pct:+.2f}%[/]"
+            elif total_ret_pct < 0:
+                tr_cell = f"[red]{total_ret_pct:+.2f}%[/]"
+            else:
+                tr_cell = "0.00%"
             table.add_row(
                 snap.ts.strftime("%Y-%m-%d %H:%M"),
                 f"${snap.equity_usdt:,.2f}",
                 delta,
+                tr_cell,
             )
             prev = snap.equity_usdt
         console.print(table)
+        console.print(
+            f"\n[dim]Baseline = first snapshot in window (${baseline:,.2f}).[/]"
+        )
     finally:
         await db.close()
     return 0
@@ -440,7 +525,6 @@ async def cmd_reset(args, console: Console) -> int:
 
 async def cmd_watch(args, console: Console) -> int:
     """Refresh status every N seconds until Ctrl+C."""
-    from rich.live import Live
 
     while True:
         try:
@@ -463,9 +547,9 @@ async def cmd_watch(args, console: Console) -> int:
                 table.add_row(f"Equity ({s.quote_asset})", f"${eq:,.2f}")
                 table.add_row(s.base_asset, f"{s.btc_qty:.8f}")
                 table.add_row(s.quote_asset, f"{s.usdt_qty:,.4f}")
-                from datetime import datetime, timezone
+                from datetime import datetime
 
-                table.add_row("Last refresh", datetime.now(timezone.utc).strftime("%H:%M:%S UTC"))
+                table.add_row("Last refresh", datetime.now(UTC).strftime("%H:%M:%S UTC"))
                 console.clear()
                 console.print(Panel(table, title=f"BTC trend bot · refresh every {args.interval}s · Ctrl+C to quit", expand=False))
             finally:
@@ -481,6 +565,31 @@ async def cmd_watch(args, console: Console) -> int:
         except KeyboardInterrupt:
             console.print("\n[dim]Stopped watching.[/]")
             return 0
+
+
+async def cmd_logs(args, console: Console) -> int:
+    """Show the tail of the launchd evaluate log."""
+    from src.scheduler import paths
+
+    p = paths(_PROJECT_ROOT)
+    log_path = p.stderr_log if args.errors else p.stdout_log
+    if not log_path.exists():
+        console.print(f"[dim]No log file at {log_path} yet.[/]")
+        console.print(
+            "[dim]Run `tradbot install-cron` and wait for the first scheduled "
+            "evaluate to produce one.[/]"
+        )
+        return 0
+    try:
+        with log_path.open() as f:
+            lines = f.readlines()[-args.lines :]
+        console.print(f"[dim]── {log_path} (last {len(lines)} lines) ──[/]")
+        for line in lines:
+            console.print(line.rstrip())
+    except Exception as e:
+        console.print(f"[red]✗[/] Couldn't read {log_path}: {e}")
+        return 1
+    return 0
 
 
 async def cmd_install_cron(args, console: Console) -> int:
@@ -536,9 +645,9 @@ async def cmd_cron_status(args, console: Console) -> int:
 
 async def cmd_backtest(args, console: Console) -> int:
     """Run the 5-year backtest and print the comparison table."""
+    from scripts.backtest_trend import _fetch_daily
     from src.backtest.trend_backtest import backtest_sma_trend
     from src.backtest.trend_metrics import compute_full_metrics
-    from scripts.backtest_trend import _fetch_daily
 
     console.print(f"[bold]Fetching {args.years}y of daily {SYMBOL} closes...[/]")
     try:
@@ -626,6 +735,9 @@ def main() -> None:
     p_ic.add_argument("--minute", type=int, default=5)
     sub.add_parser("uninstall-cron", help="Remove the launchd agent.")
     sub.add_parser("cron-status", help="Show launchd agent install state.")
+    p_logs = sub.add_parser("logs", help="Tail the launchd evaluate log.")
+    p_logs.add_argument("--lines", type=int, default=50)
+    p_logs.add_argument("--errors", action="store_true", help="Tail stderr instead.")
 
     args = parser.parse_args()
     console = Console()
@@ -645,6 +757,7 @@ def main() -> None:
         "install-cron": cmd_install_cron,
         "uninstall-cron": cmd_uninstall_cron,
         "cron-status": cmd_cron_status,
+        "logs": cmd_logs,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

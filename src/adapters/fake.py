@@ -161,6 +161,10 @@ class FakeExchange(ExchangeAdapter):
         pos = self._positions.get(symbol)
         if pos is None:
             return
+        if ":" in symbol:
+            margin_asset = symbol.split(":")[-1]
+        else:
+            margin_asset = symbol.split("/")[-1]
         self._positions[symbol] = ExchangePosition(
             symbol=pos.symbol,
             leg=pos.leg,
@@ -171,7 +175,7 @@ class FakeExchange(ExchangeAdapter):
             margin=pos.margin + amount,
             unrealized_pnl=pos.unrealized_pnl,
         )
-        self._debit("perp", "USDT", amount)
+        self._debit("perp", margin_asset, amount)
 
     # ---- internals ---------------------------------------------------
 
@@ -183,13 +187,13 @@ class FakeExchange(ExchangeAdapter):
         price: Decimal,
         fee: Decimal,
     ) -> None:
-        base = symbol.split("/", maxsplit=1)[0]
+        base, quote = symbol.split("/", maxsplit=1)
         if side == "buy":
-            self._debit("spot", "USDT", qty * price + fee)
+            self._debit("spot", quote, qty * price + fee)
             self._credit("spot", base, qty)
         else:
             self._debit("spot", base, qty)
-            self._credit("spot", "USDT", qty * price - fee)
+            self._credit("spot", quote, qty * price - fee)
 
     def _apply_perp_fill(
         self,
@@ -199,12 +203,19 @@ class FakeExchange(ExchangeAdapter):
         price: Decimal,
         reduce_only: bool,
     ) -> None:
+        # Perp pairs on Binance use settle-currency notation like
+        # "BTC/USDT:USDT" — the part after the colon is the margin asset.
+        # Fall back to the quote currency if no colon present.
+        if ":" in symbol:
+            margin_asset = symbol.split(":")[-1]
+        else:
+            margin_asset = symbol.split("/")[-1]
         pos = self._positions.get(symbol)
         signed = qty if side == "buy" else -qty
         if pos is None:
             leverage = Decimal(self._leverage.get(symbol, 2))
             margin = qty * price / leverage
-            self._debit("perp", "USDT", margin)
+            self._debit("perp", margin_asset, margin)
             self._positions[symbol] = ExchangePosition(
                 symbol=symbol,
                 leg="perp",
@@ -221,7 +232,7 @@ class FakeExchange(ExchangeAdapter):
         if new_qty == 0:
             # Closed; release margin + realize PnL.
             pnl = (pos.entry_price - price) * pos.qty  # short qty negative
-            self._credit("perp", "USDT", pos.margin + pnl)
+            self._credit("perp", margin_asset, pos.margin + pnl)
             del self._positions[symbol]
             return
 

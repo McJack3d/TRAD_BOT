@@ -30,7 +30,14 @@ def _slice_to_test_window(
     baseline_equity: Decimal,
 ) -> TrendBacktestResult:
     """Trim a full backtest result (warmup + test) down to just the test
-    portion, with equity normalized so it starts at `baseline_equity`."""
+    portion.
+
+    Strategy equity is left as-is (it was already `baseline_equity` at
+    test_start because the bot was idle during warmup). Buy-and-hold is
+    REBASED so its value at test_start equals `baseline_equity` —
+    otherwise we'd be crediting the warmup-period BTC move to the test
+    window's B&H number, which would overstate the benchmark.
+    """
     eq = r.equity_curve.copy()
     eq["ts"] = pd.to_datetime(eq["ts"], utc=True)
     eq = eq[(eq["ts"] >= test_start) & (eq["ts"] <= test_end)].reset_index(drop=True)
@@ -50,6 +57,10 @@ def _slice_to_test_window(
             final_equity=baseline_equity,
             final_buy_and_hold=baseline_equity,
         )
+    bh_at_test_start = eq["buy_and_hold_equity"].iloc[0]
+    if bh_at_test_start > 0:
+        scale = float(baseline_equity) / float(bh_at_test_start)
+        eq["buy_and_hold_equity"] = eq["buy_and_hold_equity"] * scale
     final_eq = Decimal(str(eq["strategy_equity"].iloc[-1]))
     final_bh = Decimal(str(eq["buy_and_hold_equity"].iloc[-1]))
     return TrendBacktestResult(

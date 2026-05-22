@@ -7,10 +7,9 @@ Pluggable so tests pass a stub.
 
 from __future__ import annotations
 
-import shlex
 import subprocess
 import sys
-from typing import Callable, Protocol
+from typing import Protocol
 
 
 class Notifier(Protocol):

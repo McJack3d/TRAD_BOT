@@ -12,10 +12,10 @@ is macOS-only by design.
 
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import UTC
 from pathlib import Path
 
 LABEL = "com.tradbot.daily"
@@ -47,10 +47,10 @@ def build_plist(p: SchedulerPaths, hour_utc: int, minute_utc: int = 5) -> str:
     """Return the plist XML body. Hour/minute are UTC; launchd interprets
     `StartCalendarInterval` in LOCAL time, so we have to convert at install
     time using the user's current TZ offset."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     # Convert the requested UTC time to local time.
-    now_utc = datetime.now(timezone.utc).replace(hour=hour_utc, minute=minute_utc, second=0, microsecond=0)
+    now_utc = datetime.now(UTC).replace(hour=hour_utc, minute=minute_utc, second=0, microsecond=0)
     local = now_utc.astimezone()
     hour_local = local.hour
     minute_local = local.minute
