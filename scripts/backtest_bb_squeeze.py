@@ -48,7 +48,13 @@ async def _fetch_intraday(symbol: str, timeframe: str, months: int) -> pd.Series
     if timeframe not in _TIMEFRAME_MS:
         raise SystemExit(f"unsupported timeframe {timeframe}; choose from {list(_TIMEFRAME_MS)}")
     tf_ms = _TIMEFRAME_MS[timeframe]
-    client = ccxt.binance({"enableRateLimit": True, "timeout": 30_000})
+    # Spot-only: skip futures (fapi.binance.com) market loading — it's
+    # not needed for klines and sometimes times out independently.
+    client = ccxt.binance({
+        "enableRateLimit": True,
+        "timeout": 30_000,
+        "options": {"defaultType": "spot", "fetchMarkets": ["spot"]},
+    })
     try:
         await client.load_markets()
         since = int((datetime.now(UTC) - timedelta(days=months * 30)).timestamp() * 1000)
