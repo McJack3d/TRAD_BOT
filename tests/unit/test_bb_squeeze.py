@@ -173,6 +173,44 @@ def test_trend_filter_does_not_block_exits() -> None:
     assert sig.action == SqueezeAction.SELL
 
 
+def test_stop_loss_fires_when_close_drops_below_trigger() -> None:
+    """In LONG with a 1% stop, a close that's 1.5% below entry must trigger SELL."""
+    # 80 bars of stable price around 100, last bar dumps to 98.5 (1.5% below entry 100).
+    closes_arr = [100.0] * 79 + [98.5]
+    closes = pd.Series(closes_arr, index=_ts(80))
+    p = SqueezeParams(stop_loss_pct=0.01)  # 1% stop
+    # Pretend we entered at bar 70 when price was 100.
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.LONG, None, entry_bar_index=70, params=p,
+    )
+    assert sig.action == SqueezeAction.SELL
+    assert "stop_loss" in sig.reason
+
+
+def test_stop_loss_does_not_fire_within_tolerance() -> None:
+    """A close 0.5% below entry with a 1% stop should NOT trigger."""
+    closes_arr = [100.0] * 79 + [99.5]  # only 0.5% down from entry
+    closes = pd.Series(closes_arr, index=_ts(80))
+    p = SqueezeParams(stop_loss_pct=0.01)
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.LONG, None, entry_bar_index=70, params=p,
+    )
+    # Either HOLD (above stop) or SELL via another exit — but NOT a stop exit.
+    assert "stop_loss" not in sig.reason
+
+
+def test_stop_loss_zero_means_off() -> None:
+    """stop_loss_pct=0 (default) must not interfere with existing exit logic."""
+    closes_arr = [100.0] * 79 + [50.0]  # massive drop
+    closes = pd.Series(closes_arr, index=_ts(80))
+    p = SqueezeParams(stop_loss_pct=0.0)
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.LONG, None, entry_bar_index=70, params=p,
+    )
+    # Whatever fires, it must NOT be a stop_loss exit.
+    assert "stop_loss" not in sig.reason
+
+
 def test_bbw_filter_disabled_allows_setup() -> None:
     """With min_bbw_percentile=0 the filter is off; setups always pass."""
     # Same construction as the prior test but the filter is disabled.

@@ -84,6 +84,9 @@ class SqueezeParams:
     min_bbw_percentile: float = 30.0
     # After arming, the setup expires if no trigger fires within this many bars.
     setup_expiry_bars: int = 6
+    # Hard stop: exit if close drops by this fraction below entry price.
+    # 0 = off. The MACD/midline exits still apply on top of the stop.
+    stop_loss_pct: float = 0.0
 
 
 @dataclass(slots=True)
@@ -142,6 +145,7 @@ def _eval_state_machine(
     current_index: int,
     state: SqueezeState,
     armed_at_index: int | None,
+    entry_price: float | None,
     params: SqueezeParams,
     trend_up: bool,
 ) -> SqueezeSignal:
@@ -158,6 +162,20 @@ def _eval_state_machine(
     )
 
     if state == SqueezeState.LONG:
+        # Hard stop fires FIRST — capping losses is the whole point.
+        if p.stop_loss_pct > 0 and entry_price is not None:
+            stop_trigger = entry_price * (1.0 - p.stop_loss_pct)
+            if close_now <= stop_trigger:
+                return SqueezeSignal(
+                    action=SqueezeAction.SELL,
+                    state_after=SqueezeState.FLAT,
+                    reason=(
+                        f"exit (stop_loss); close {close_now:.2f} <= trigger "
+                        f"{stop_trigger:.2f} (entry {entry_price:.2f}, "
+                        f"stop {p.stop_loss_pct:.2%})"
+                    ),
+                    **base,
+                )
         crossed_up = hist_prev <= 0.0 < hist_now
         hit_middle = close_now >= middle
         if crossed_up or hit_middle:
@@ -260,9 +278,14 @@ def evaluate_at(
     armed_at_index: int | None,
     params: SqueezeParams,
     trend_up: bool = True,
+    entry_bar_index: int | None = None,
 ) -> SqueezeSignal:
     """Fast path used by the backtest: evaluate bar `i` against precomputed
-    indicators. O(1) per call after the one-time `precompute_squeeze`."""
+    indicators. O(1) per call after the one-time `precompute_squeeze`.
+
+    `entry_bar_index` is needed only when state == LONG and the stop-loss
+    is on — the entry price is read from `closes.iloc[entry_bar_index]`.
+    """
     p = params
     close_now = float(closes.iloc[i])
     lower = float(pre.bb_lower[i])
@@ -271,6 +294,10 @@ def evaluate_at(
     rsi_now = float(pre.rsi[i])
     hist_now = float(pre.macd_hist[i])
     hist_prev = float(pre.macd_hist[i - 1]) if i > 0 else hist_now
+    entry_price = (
+        float(closes.iloc[entry_bar_index])
+        if entry_bar_index is not None else None
+    )
 
     if (math.isnan(lower) or math.isnan(rsi_now) or math.isnan(hist_now)):
         return SqueezeSignal(
@@ -297,6 +324,7 @@ def evaluate_at(
         current_index=i,
         state=state,
         armed_at_index=armed_at_index,
+        entry_price=entry_price,
         params=p,
         trend_up=trend_up,
     )
@@ -335,4 +363,11 @@ def evaluate_bb_squeeze(
             reason=f"need {needed} bars, have {len(closes)}",
         )
     pre = precompute_squeeze(closes, p)
-    return evaluate_at(closes, pre, len(closes) - 1, state, armed_at_index, p, trend_up)
+    return evaluate_at(
+        closes, pre, len(closes) - 1,
+        state=state,
+        armed_at_index=armed_at_index,
+        params=p,
+        trend_up=trend_up,
+        entry_bar_index=entry_bar_index,
+    )

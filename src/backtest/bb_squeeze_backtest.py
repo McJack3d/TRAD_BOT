@@ -120,6 +120,7 @@ def backtest_bb_squeeze(
             armed_at_index=armed_at_index,
             params=p,
             trend_up=_trend_up_asof(ts),
+            entry_bar_index=entry_bar_index,
         )
 
         if signal.action == SqueezeAction.ARM:

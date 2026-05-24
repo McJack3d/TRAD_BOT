@@ -164,6 +164,7 @@ def _run(
     trend_filter: bool,
     trend_sma: int,
     trend_buffer: float,
+    stop_loss: float,
 ) -> None:
     configure_logging("WARNING")
     console = Console()
@@ -199,6 +200,7 @@ def _run(
         min_bbw_percentile=min_bbw_pct,
         bbw_lookback=bbw_lookback,
         setup_expiry_bars=setup_expiry,
+        stop_loss_pct=stop_loss,
     )
     result = backtest_bb_squeeze(
         closes,
@@ -219,11 +221,21 @@ def _run(
         f", trend=SMA{trend_sma}+{trend_buffer:.0%}"
         if trend_filter else ", trend=OFF"
     )
+    stop_note = f", stop={stop_loss:.2%}" if stop_loss > 0 else ""
     title = (
         f"BB-squeeze + RSI on {symbol} ({timeframe}, {months}mo) — "
-        f"BB{bb_window}/RSI<{rsi_max:.0f}, BBW≥p{min_bbw_pct:.0f}{filter_note}"
+        f"BB{bb_window}/RSI<{rsi_max:.0f}, BBW≥p{min_bbw_pct:.0f}{filter_note}{stop_note}"
     )
     _print_summary(title, stats, equity)
+
+    # Surface stop-loss firing rate when a stop is configured — the whole
+    # point is to verify it's actually cutting losses, not just adding noise.
+    if stop_loss > 0 and result.trades:
+        n_stops = sum(1 for t in result.trades if "stop_loss" in t.get("exit_reason", ""))
+        Console().print(
+            f"\n[dim]Stop-loss fired on {n_stops}/{len(result.trades)} trades "
+            f"({n_stops / len(result.trades):.1%})[/]"
+        )
 
     if result.trades and show_trades > 0:
         console.print(f"\n[dim]First {min(show_trades, len(result.trades))} trades:[/]")
@@ -265,6 +277,11 @@ def main() -> None:
                         help="Daily SMA window for the trend filter.")
     parser.add_argument("--trend-buffer", type=float, default=0.01,
                         help="Daily close must exceed SMA*(1+buffer) to count as uptrend.")
+    parser.add_argument(
+        "--stop-loss", type=float, default=0.0,
+        help="Per-trade hard stop as a fraction (e.g. 0.005 = 0.5%%). "
+             "0 = off. Cuts losses before the MACD/midline exit fires.",
+    )
     args = parser.parse_args()
 
     _run(
@@ -283,6 +300,7 @@ def main() -> None:
         trend_filter=not args.no_trend_filter,
         trend_sma=args.trend_sma,
         trend_buffer=args.trend_buffer,
+        stop_loss=args.stop_loss,
     )
 
 
