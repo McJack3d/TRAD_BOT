@@ -17,7 +17,8 @@ from src.strategy.bb_squeeze import (
     SqueezeAction,
     SqueezeParams,
     SqueezeState,
-    evaluate_bb_squeeze,
+    evaluate_at,
+    precompute_squeeze,
 )
 
 
@@ -80,6 +81,8 @@ def backtest_bb_squeeze(
     trend_lookup = _build_trend_lookup(
         daily_closes, trend_sma_window, trend_entry_buffer_pct
     )
+    # ONE-TIME vectorized indicator compute — was the O(n²) bottleneck.
+    pre = precompute_squeeze(closes, p)
 
     equity = initial_equity
     qty = Decimal("0")
@@ -111,14 +114,10 @@ def backtest_bb_squeeze(
     for i in range(len(closes)):
         ts = closes.index[i]
         close = Decimal(str(closes.iloc[i]))
-        # Window up to and including the current bar — the strategy may
-        # NOT peek into the future, so we slice strictly.
-        window = closes.iloc[: i + 1]
-        signal = evaluate_bb_squeeze(
-            window,
+        signal = evaluate_at(
+            closes, pre, i,
             state=state,
             armed_at_index=armed_at_index,
-            entry_bar_index=entry_bar_index,
             params=p,
             trend_up=_trend_up_asof(ts),
         )

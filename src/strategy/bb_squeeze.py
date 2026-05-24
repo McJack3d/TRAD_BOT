@@ -23,14 +23,20 @@ The function is stateless — it takes a full bar history plus the
 current bot position and returns the action for the most recent bar.
 The caller is responsible for tracking which bar was the "arm" bar
 and feeding it back in via `armed_at_index`.
+
+`precompute_squeeze` is the fast path: vectorize the indicator
+calculations ONCE over the full series so a backtest can walk the
+state machine in O(1) per bar instead of O(n).
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import Enum
 
+import numpy as np
 import pandas as pd
 
 from src.strategy.indicators import bollinger_bands, macd, rsi
@@ -80,80 +86,68 @@ class SqueezeParams:
     setup_expiry_bars: int = 6
 
 
-def _enough_history(closes: pd.Series, p: SqueezeParams) -> bool:
-    # We need enough bars for the slowest indicator (MACD slow EMA + signal)
-    # plus a few for the BBW percentile to be meaningful.
-    needed = max(p.macd_slow + p.macd_signal, p.bb_window, p.rsi_window) + 5
-    return len(closes) >= needed
+@dataclass(slots=True)
+class SqueezePrecomputed:
+    """All bar-wise indicator values, computed once for fast bar-by-bar lookup."""
+    bb_lower: np.ndarray
+    bb_middle: np.ndarray
+    bb_width: np.ndarray
+    rsi: np.ndarray
+    macd_hist: np.ndarray
+    bbw_filter_pass: np.ndarray  # bool array, True where BBW filter would allow
 
 
-def _bbw_filter_pass(width: pd.Series, p: SqueezeParams) -> bool:
-    """True if current BBW is at/above the recent percentile floor."""
-    if p.min_bbw_percentile <= 0:
-        return True
-    recent = width.iloc[-p.bbw_lookback :].dropna()
-    if len(recent) < 10:
-        return True  # not enough history for a meaningful percentile
-    threshold = float(recent.quantile(p.min_bbw_percentile / 100.0))
-    current = float(width.iloc[-1])
-    return current >= threshold
+def precompute_squeeze(closes: pd.Series, params: SqueezeParams) -> SqueezePrecomputed:
+    """Vectorize all indicator computations over the full series.
 
-
-def evaluate_bb_squeeze(
-    closes: pd.Series,
-    state: SqueezeState,
-    armed_at_index: int | None,
-    entry_bar_index: int | None,
-    params: SqueezeParams | None = None,
-    trend_up: bool = True,
-) -> SqueezeSignal:
-    """Decide the action for the bar at `closes.iloc[-1]`.
-
-    `state` is the bot's current state going into this bar.
-    `armed_at_index` is the integer index of the bar that armed us
-    (only meaningful when state == ARMED). `entry_bar_index` is the
-    integer index of the bar we entered on (only meaningful when
-    state == LONG). The CALLER persists these between bars.
-
-    `trend_up` is an external regime filter — typically the caller
-    computes it from a slower timeframe (e.g. daily SMA-200). When
-    False, an otherwise-valid trigger is blocked from becoming a BUY
-    so we don't catch falling knives in a confirmed downtrend.
-    Exits (LONG → FLAT) are NEVER blocked by the trend filter — once
-    we're in a position we always honor the exit signal.
-
-    Returns a `SqueezeSignal` describing the action and the state we
-    end up in after acting on this bar.
+    This is the single O(n) pass that lets a backtest walk the state
+    machine in O(1) per bar (total O(n)) instead of O(n²) for slicing-
+    and-recomputing on every bar.
     """
-    p = params or SqueezeParams()
-    last_close = Decimal(str(closes.iloc[-1]))
-
-    if not _enough_history(closes, p):
-        return SqueezeSignal(
-            action=SqueezeAction.HOLD,
-            state_after=state,
-            close=last_close,
-            bb_lower=Decimal("0"),
-            bb_middle=Decimal("0"),
-            bb_width=Decimal("0"),
-            rsi=Decimal("0"),
-            macd_hist=Decimal("0"),
-            reason=f"need {p.macd_slow + p.macd_signal + 5} bars, have {len(closes)}",
-        )
-
+    p = params
     bb = bollinger_bands(closes, window=p.bb_window, num_std=p.bb_num_std)
     rsi_series = rsi(closes, window=p.rsi_window)
     mac = macd(closes, fast=p.macd_fast, slow=p.macd_slow, signal_window=p.macd_signal)
 
-    lower = float(bb.lower.iloc[-1])
-    middle = float(bb.middle.iloc[-1])
-    width = float(bb.width.iloc[-1])
-    rsi_now = float(rsi_series.iloc[-1])
-    hist_now = float(mac.histogram.iloc[-1])
-    hist_prev = float(mac.histogram.iloc[-2]) if len(mac.histogram) >= 2 else hist_now
-    close_now = float(closes.iloc[-1])
-    current_index = len(closes) - 1
+    if p.min_bbw_percentile > 0:
+        # Per-bar threshold = rolling quantile of recent BBW. Until we have at
+        # least 10 valid BBW values in the window, threshold is NaN and we
+        # treat it as "filter not yet meaningful → allow".
+        thr = bb.width.rolling(p.bbw_lookback, min_periods=10).quantile(
+            p.min_bbw_percentile / 100.0
+        )
+        passes = ((bb.width >= thr) | thr.isna()).to_numpy()
+    else:
+        passes = np.ones(len(closes), dtype=bool)
 
+    return SqueezePrecomputed(
+        bb_lower=bb.lower.to_numpy(),
+        bb_middle=bb.middle.to_numpy(),
+        bb_width=bb.width.to_numpy(),
+        rsi=rsi_series.to_numpy(),
+        macd_hist=mac.histogram.to_numpy(),
+        bbw_filter_pass=passes,
+    )
+
+
+def _eval_state_machine(
+    close_now: float,
+    lower: float,
+    middle: float,
+    width: float,
+    rsi_now: float,
+    hist_now: float,
+    hist_prev: float,
+    bbw_pass: bool,
+    current_index: int,
+    state: SqueezeState,
+    armed_at_index: int | None,
+    params: SqueezeParams,
+    trend_up: bool,
+) -> SqueezeSignal:
+    """The pure state-machine logic — same for live and backtest paths."""
+    p = params
+    last_close = Decimal(str(close_now))
     base = dict(
         close=last_close,
         bb_lower=Decimal(str(lower)),
@@ -164,7 +158,6 @@ def evaluate_bb_squeeze(
     )
 
     if state == SqueezeState.LONG:
-        # Exit conditions: MACD hist crosses ↑0, or price reaches middle band.
         crossed_up = hist_prev <= 0.0 < hist_now
         hit_middle = close_now >= middle
         if crossed_up or hit_middle:
@@ -193,8 +186,6 @@ def evaluate_bb_squeeze(
             )
         if close_now > lower:
             if not trend_up:
-                # Trigger fired but the regime filter says downtrend — skip
-                # the entry and stay armed (or eventually disarm via expiry).
                 return SqueezeSignal(
                     action=SqueezeAction.HOLD,
                     state_after=SqueezeState.ARMED,
@@ -213,11 +204,9 @@ def evaluate_bb_squeeze(
                 ),
                 **base,
             )
-        # Still below the lower band — check if we should re-arm (refresh
-        # the setup bar so the expiry window restarts on the latest dip).
         if rsi_now < p.rsi_entry_max:
             return SqueezeSignal(
-                action=SqueezeAction.ARM,  # re-arm refreshes armed_at_index
+                action=SqueezeAction.ARM,
                 state_after=SqueezeState.ARMED,
                 reason=f"re-arm: still below lower BB, RSI {rsi_now:.1f}",
                 **base,
@@ -238,7 +227,7 @@ def evaluate_bb_squeeze(
             reason=f"no setup; close {close_now:.2f}, lower {lower:.2f}, RSI {rsi_now:.1f}",
             **base,
         )
-    if not _bbw_filter_pass(bb.width, p):
+    if not bbw_pass:
         return SqueezeSignal(
             action=SqueezeAction.HOLD,
             state_after=SqueezeState.FLAT,
@@ -246,8 +235,6 @@ def evaluate_bb_squeeze(
             **base,
         )
     if not trend_up:
-        # Daily regime is down — don't even arm. Long mean-reversion in a
-        # confirmed downtrend is the dominant failure mode we observed.
         return SqueezeSignal(
             action=SqueezeAction.HOLD,
             state_after=SqueezeState.FLAT,
@@ -263,3 +250,89 @@ def evaluate_bb_squeeze(
         ),
         **base,
     )
+
+
+def evaluate_at(
+    closes: pd.Series,
+    pre: SqueezePrecomputed,
+    i: int,
+    state: SqueezeState,
+    armed_at_index: int | None,
+    params: SqueezeParams,
+    trend_up: bool = True,
+) -> SqueezeSignal:
+    """Fast path used by the backtest: evaluate bar `i` against precomputed
+    indicators. O(1) per call after the one-time `precompute_squeeze`."""
+    p = params
+    close_now = float(closes.iloc[i])
+    lower = float(pre.bb_lower[i])
+    middle = float(pre.bb_middle[i])
+    width = float(pre.bb_width[i])
+    rsi_now = float(pre.rsi[i])
+    hist_now = float(pre.macd_hist[i])
+    hist_prev = float(pre.macd_hist[i - 1]) if i > 0 else hist_now
+
+    if (math.isnan(lower) or math.isnan(rsi_now) or math.isnan(hist_now)):
+        return SqueezeSignal(
+            action=SqueezeAction.HOLD,
+            state_after=state,
+            close=Decimal(str(close_now)),
+            bb_lower=Decimal("0"),
+            bb_middle=Decimal("0"),
+            bb_width=Decimal("0"),
+            rsi=Decimal("0"),
+            macd_hist=Decimal("0"),
+            reason=f"indicators not warmed up at bar {i}",
+        )
+
+    return _eval_state_machine(
+        close_now=close_now,
+        lower=lower,
+        middle=middle,
+        width=width,
+        rsi_now=rsi_now,
+        hist_now=hist_now,
+        hist_prev=hist_prev,
+        bbw_pass=bool(pre.bbw_filter_pass[i]),
+        current_index=i,
+        state=state,
+        armed_at_index=armed_at_index,
+        params=p,
+        trend_up=trend_up,
+    )
+
+
+def evaluate_bb_squeeze(
+    closes: pd.Series,
+    state: SqueezeState,
+    armed_at_index: int | None,
+    entry_bar_index: int | None,
+    params: SqueezeParams | None = None,
+    trend_up: bool = True,
+) -> SqueezeSignal:
+    """Live-path entry point: compute indicators on the spot and evaluate the
+    last bar. Use `precompute_squeeze` + `evaluate_at` for backtests.
+
+    `state` / `armed_at_index` / `entry_bar_index` are the bot's prior state
+    going into this bar; the caller persists them between calls.
+
+    `trend_up` is an external regime filter — typically from a slower
+    timeframe (e.g. daily SMA-200). False blocks new entries; exits are
+    never blocked.
+    """
+    p = params or SqueezeParams()
+    needed = max(p.macd_slow + p.macd_signal, p.bb_window, p.rsi_window) + 5
+    if len(closes) < needed:
+        return SqueezeSignal(
+            action=SqueezeAction.HOLD,
+            state_after=state,
+            close=Decimal(str(closes.iloc[-1])) if len(closes) else Decimal("0"),
+            bb_lower=Decimal("0"),
+            bb_middle=Decimal("0"),
+            bb_width=Decimal("0"),
+            rsi=Decimal("0"),
+            macd_hist=Decimal("0"),
+            reason=f"need {needed} bars, have {len(closes)}",
+        )
+    pre = precompute_squeeze(closes, p)
+    return evaluate_at(closes, pre, len(closes) - 1, state, armed_at_index, p, trend_up)
