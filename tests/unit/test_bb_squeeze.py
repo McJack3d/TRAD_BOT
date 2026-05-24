@@ -131,6 +131,48 @@ def test_bbw_filter_blocks_setup_when_market_is_flat() -> None:
     assert sig.action != SqueezeAction.BUY
 
 
+def test_trend_filter_blocks_buy_on_armed_trigger() -> None:
+    """Even with a perfect ARMED→trigger setup, trend_up=False must stop the BUY."""
+    rng = np.random.default_rng(42)
+    base = 100 + rng.normal(0, 1.5, 60)
+    dump = [96.0, 90.0, 82.0]
+    bounce = np.concatenate([base, dump, [95.0]])
+    closes = pd.Series(bounce, index=_ts(64))
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.ARMED, armed_at_index=62, entry_bar_index=None,
+        trend_up=False,
+    )
+    assert sig.action == SqueezeAction.HOLD
+    assert sig.state_after == SqueezeState.ARMED
+    assert "trend down" in sig.reason
+
+
+def test_trend_filter_blocks_arm_on_flat_setup() -> None:
+    """A fresh oversold setup in FLAT must be ignored when trend is down."""
+    rng = np.random.default_rng(42)
+    base = 100 + rng.normal(0, 1.5, 60)
+    dump = [96.0, 90.0, 82.0]
+    closes = pd.Series(np.concatenate([base, dump]), index=_ts(63))
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.FLAT, None, None, trend_up=False,
+    )
+    assert sig.action == SqueezeAction.HOLD
+    assert sig.state_after == SqueezeState.FLAT
+    assert "trend" in sig.reason
+
+
+def test_trend_filter_does_not_block_exits() -> None:
+    """Exits must fire regardless of the trend filter — once in, always exit."""
+    base = np.linspace(95, 90, 79).tolist()
+    base.append(98.0)  # spike above the SMA → exit condition
+    closes = pd.Series(base, index=_ts(80))
+    sig = evaluate_bb_squeeze(
+        closes, SqueezeState.LONG, None, entry_bar_index=78, trend_up=False,
+    )
+    # Trend filter is OFF for exits — we should still SELL.
+    assert sig.action == SqueezeAction.SELL
+
+
 def test_bbw_filter_disabled_allows_setup() -> None:
     """With min_bbw_percentile=0 the filter is off; setups always pass."""
     # Same construction as the prior test but the filter is disabled.

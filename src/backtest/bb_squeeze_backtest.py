@@ -30,12 +30,35 @@ class SqueezeBacktestResult:
     final_buy_and_hold: Decimal = Decimal("0")
 
 
+def _build_trend_lookup(
+    daily_closes: pd.Series | None,
+    sma_window: int,
+    entry_buffer_pct: float,
+) -> tuple[pd.Series, pd.Series] | None:
+    """Pre-compute the daily SMA and a series of effective entry thresholds.
+
+    Returns (daily_close_series, threshold_series) both UTC-indexed and
+    sorted, so the caller can do a cheap `.asof(ts)` lookup per bar.
+    """
+    if daily_closes is None or daily_closes.empty:
+        return None
+    s = daily_closes.copy()
+    s.index = pd.to_datetime(s.index, utc=True)
+    s = s.sort_index()
+    sma = s.rolling(sma_window).mean()
+    thresh = sma * (1.0 + entry_buffer_pct)
+    return s, thresh
+
+
 def backtest_bb_squeeze(
     closes: pd.Series,
     initial_equity: Decimal = Decimal("1000"),
     fee_bps: Decimal = Decimal("4.0"),
     slippage_bps: Decimal = Decimal("2.0"),
     params: SqueezeParams | None = None,
+    daily_closes: pd.Series | None = None,
+    trend_sma_window: int = 200,
+    trend_entry_buffer_pct: float = 0.01,
 ) -> SqueezeBacktestResult:
     """Run the BB-squeeze strategy on a series of intraday closes.
 
@@ -43,9 +66,20 @@ def backtest_bb_squeeze(
     by convention, but the strategy doesn't care about the timeframe).
     Trades the full equity on each entry — no position sizing inside
     the backtest. Fees + slippage are deducted from both sides.
+
+    `daily_closes` (optional) enables a daily-SMA trend regime filter:
+    at each intraday bar we look up the most recent daily close and
+    its SMA(trend_sma_window). If `daily_close > sma * (1 + buffer)`
+    the regime is "up" and entries are allowed; otherwise entries are
+    blocked. Exits are never blocked. The daily series must extend
+    earlier than `closes.index[0]` by at least `trend_sma_window` days
+    for the filter to fire at the start of the test window.
     """
     p = params or SqueezeParams()
     cost_factor = Decimal("1") - (fee_bps + slippage_bps) / Decimal("10000")
+    trend_lookup = _build_trend_lookup(
+        daily_closes, trend_sma_window, trend_entry_buffer_pct
+    )
 
     equity = initial_equity
     qty = Decimal("0")
@@ -59,6 +93,21 @@ def backtest_bb_squeeze(
     trades: list[dict] = []
     initial_close = Decimal(str(closes.iloc[0]))
 
+    def _trend_up_asof(ts: pd.Timestamp) -> bool:
+        # No filter configured → always allow (preserves prior behavior).
+        if trend_lookup is None:
+            return True
+        daily_series, threshold_series = trend_lookup
+        # asof returns NaN if no prior value exists or the SMA hasn't warmed
+        # up yet. In that case we conservatively disallow entries — better
+        # to miss trades than make them blind.
+        ts_utc = ts if ts.tzinfo else pd.Timestamp(ts, tz="UTC")
+        d_close = daily_series.asof(ts_utc)
+        d_thresh = threshold_series.asof(ts_utc)
+        if pd.isna(d_close) or pd.isna(d_thresh):
+            return False
+        return float(d_close) > float(d_thresh)
+
     for i in range(len(closes)):
         ts = closes.index[i]
         close = Decimal(str(closes.iloc[i]))
@@ -71,6 +120,7 @@ def backtest_bb_squeeze(
             armed_at_index=armed_at_index,
             entry_bar_index=entry_bar_index,
             params=p,
+            trend_up=_trend_up_asof(ts),
         )
 
         if signal.action == SqueezeAction.ARM:

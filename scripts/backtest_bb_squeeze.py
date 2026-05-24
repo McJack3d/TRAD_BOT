@@ -43,42 +43,75 @@ _TIMEFRAME_MS = {
 }
 
 
+def _binance_client():
+    # Spot-only: skip futures (fapi.binance.com) market loading — it's
+    # not needed for klines and sometimes times out independently.
+    return ccxt.binance({
+        "enableRateLimit": True,
+        "timeout": 30_000,
+        "options": {"defaultType": "spot", "fetchMarkets": ["spot"]},
+    })
+
+
+async def _paginate_ohlcv(
+    client, symbol: str, timeframe: str, since_ms: int, tf_ms: int,
+    progress_label: str | None = None,
+) -> list[list]:
+    """Fetch all OHLCV bars from since_ms to now, paginating by 1000 at a time."""
+    console = Console()
+    rows: list[list] = []
+    cursor = since_ms
+    last_pct = -1
+    total_ms = int(datetime.now(UTC).timestamp() * 1000) - since_ms
+    while True:
+        batch = await client.fetch_ohlcv(symbol, timeframe, since=cursor, limit=1000)
+        if not batch:
+            break
+        rows.extend(batch)
+        last_ts = batch[-1][0]
+        if last_ts <= cursor:
+            break
+        cursor = last_ts + tf_ms
+        pct = int(min(100, max(0, (cursor - since_ms) / total_ms * 100)))
+        if progress_label and pct // 10 > last_pct // 10:
+            console.print(
+                f"[dim]  {progress_label}: up to "
+                f"{datetime.fromtimestamp(last_ts/1000, UTC).date()}  ({pct}%)[/]"
+            )
+            last_pct = pct
+        if len(batch) < 1000:
+            break
+        await asyncio.sleep(0.1)
+    return rows
+
+
 async def _fetch_intraday(symbol: str, timeframe: str, months: int) -> pd.Series:
     """Fetch `months` of intraday closes, paginating through Binance."""
     if timeframe not in _TIMEFRAME_MS:
         raise SystemExit(f"unsupported timeframe {timeframe}; choose from {list(_TIMEFRAME_MS)}")
     tf_ms = _TIMEFRAME_MS[timeframe]
-    # Spot-only: skip futures (fapi.binance.com) market loading — it's
-    # not needed for klines and sometimes times out independently.
-    client = ccxt.binance({
-        "enableRateLimit": True,
-        "timeout": 30_000,
-        "options": {"defaultType": "spot", "fetchMarkets": ["spot"]},
-    })
+    client = _binance_client()
     try:
         await client.load_markets()
         since = int((datetime.now(UTC) - timedelta(days=months * 30)).timestamp() * 1000)
-        rows: list[list] = []
-        cursor = since
-        console = Console()
-        last_pct = -1
-        total_ms = int(datetime.now(UTC).timestamp() * 1000) - since
-        while True:
-            batch = await client.fetch_ohlcv(symbol, timeframe, since=cursor, limit=1000)
-            if not batch:
-                break
-            rows.extend(batch)
-            last_ts = batch[-1][0]
-            if last_ts <= cursor:
-                break
-            cursor = last_ts + tf_ms
-            pct = int(min(100, max(0, (cursor - since) / total_ms * 100)))
-            if pct // 10 > last_pct // 10:
-                console.print(f"[dim]  fetched up to {datetime.fromtimestamp(last_ts/1000, UTC).date()}  ({pct}%)[/]")
-                last_pct = pct
-            if len(batch) < 1000:
-                break
-            await asyncio.sleep(0.1)
+        rows = await _paginate_ohlcv(client, symbol, timeframe, since, tf_ms, "intraday")
+    finally:
+        await client.close()
+
+    df = pd.DataFrame(rows, columns=["ts_ms", "open", "high", "low", "close", "volume"])
+    df = df.drop_duplicates(subset=["ts_ms"]).reset_index(drop=True)
+    df["ts"] = pd.to_datetime(df["ts_ms"], unit="ms", utc=True)
+    return pd.Series(df["close"].astype(float).values, index=df["ts"])
+
+
+async def _fetch_daily(symbol: str, days: int) -> pd.Series:
+    """Fetch `days` of daily closes — used to seed the daily SMA trend filter."""
+    tf_ms = 86_400_000
+    client = _binance_client()
+    try:
+        await client.load_markets()
+        since = int((datetime.now(UTC) - timedelta(days=days)).timestamp() * 1000)
+        rows = await _paginate_ohlcv(client, symbol, "1d", since, tf_ms, "daily")
     finally:
         await client.close()
 
@@ -128,6 +161,9 @@ def _run(
     bbw_lookback: int,
     setup_expiry: int,
     show_trades: int,
+    trend_filter: bool,
+    trend_sma: int,
+    trend_buffer: float,
 ) -> None:
     configure_logging("WARNING")
     console = Console()
@@ -143,6 +179,20 @@ def _run(
         f"Got {len(closes):,} {timeframe} closes from {closes.index[0]} to {closes.index[-1]}\n"
     )
 
+    daily_closes = None
+    if trend_filter:
+        # Need enough daily history to warm up the SMA at the FIRST intraday bar.
+        # months*30 covers the intraday span; +trend_sma extra days seeds the SMA.
+        daily_days = months * 30 + trend_sma + 5
+        console.print(
+            f"[bold]Fetching {daily_days}d of daily closes for SMA-{trend_sma} trend filter...[/]"
+        )
+        daily_closes = asyncio.run(_fetch_daily(symbol, daily_days))
+        console.print(
+            f"Got {len(daily_closes)} daily closes from {daily_closes.index[0].date()} "
+            f"to {daily_closes.index[-1].date()}\n"
+        )
+
     params = SqueezeParams(
         bb_window=bb_window,
         rsi_entry_max=rsi_max,
@@ -156,15 +206,22 @@ def _run(
         fee_bps=Decimal(str(fee_bps)),
         slippage_bps=Decimal(str(slip_bps)),
         params=params,
+        daily_closes=daily_closes,
+        trend_sma_window=trend_sma,
+        trend_entry_buffer_pct=trend_buffer,
     )
     stats = summarize(result)
     if not stats:
         console.print("[yellow]Backtest returned no rows.[/]")
         return
 
+    filter_note = (
+        f", trend=SMA{trend_sma}+{trend_buffer:.0%}"
+        if trend_filter else ", trend=OFF"
+    )
     title = (
         f"BB-squeeze + RSI on {symbol} ({timeframe}, {months}mo) — "
-        f"BB{bb_window}/RSI<{rsi_max:.0f}, BBW≥p{min_bbw_pct:.0f}"
+        f"BB{bb_window}/RSI<{rsi_max:.0f}, BBW≥p{min_bbw_pct:.0f}{filter_note}"
     )
     _print_summary(title, stats, equity)
 
@@ -200,6 +257,14 @@ def main() -> None:
     parser.add_argument("--setup-expiry", type=int, default=6,
                         help="Bars to wait for trigger before disarming.")
     parser.add_argument("--show-trades", type=int, default=10)
+    parser.add_argument(
+        "--no-trend-filter", action="store_true",
+        help="Disable the daily-SMA trend filter (entries allowed in any regime).",
+    )
+    parser.add_argument("--trend-sma", type=int, default=200,
+                        help="Daily SMA window for the trend filter.")
+    parser.add_argument("--trend-buffer", type=float, default=0.01,
+                        help="Daily close must exceed SMA*(1+buffer) to count as uptrend.")
     args = parser.parse_args()
 
     _run(
@@ -215,6 +280,9 @@ def main() -> None:
         bbw_lookback=args.bbw_lookback,
         setup_expiry=args.setup_expiry,
         show_trades=args.show_trades,
+        trend_filter=not args.no_trend_filter,
+        trend_sma=args.trend_sma,
+        trend_buffer=args.trend_buffer,
     )
 
 

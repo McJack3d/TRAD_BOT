@@ -79,6 +79,46 @@ def test_fees_reduce_pnl() -> None:
     assert with_fee.final_equity < no_fee.final_equity
 
 
+def test_trend_filter_blocks_trades_in_a_downtrend() -> None:
+    """When daily SMA-200 says downtrend, the trend filter must zero out trades."""
+    # Same dump-recover pattern as the round-trip test...
+    rng = np.random.default_rng(123)
+    base = (100 + rng.normal(0, 1.0, 60)).tolist()
+    dump = np.linspace(100, 80, 8).tolist()
+    bounce = np.linspace(82, 105, 10).tolist()
+    closes = pd.Series(np.array(base + dump + bounce), index=_ts(78))
+
+    # ...but the daily series is a sliding decline that stays below SMA-200
+    # for the entire intraday window. We need at least 200+78 daily bars
+    # so the SMA is defined across the test window.
+    n_daily = 300
+    daily_idx = pd.date_range("2023-01-01", periods=n_daily, freq="D", tz="UTC")
+    daily_vals = np.linspace(200.0, 50.0, n_daily)  # straight-line decline
+    daily = pd.Series(daily_vals, index=daily_idx)
+
+    p = SqueezeParams(min_bbw_percentile=0.0)
+    res = backtest_bb_squeeze(
+        closes, params=p, daily_closes=daily,
+        trend_sma_window=50,  # smaller SMA to fit the daily fixture
+    )
+    assert res.trades == [], (
+        f"trend filter should have blocked all entries; got {len(res.trades)} trades"
+    )
+
+
+def test_trend_filter_off_means_trades_happen() -> None:
+    """Sanity: with daily_closes=None (default), trades still happen on the
+    dump-recover pattern. This is the same fixture as the trend-blocked test."""
+    rng = np.random.default_rng(123)
+    base = (100 + rng.normal(0, 1.0, 60)).tolist()
+    dump = np.linspace(100, 80, 8).tolist()
+    bounce = np.linspace(82, 105, 10).tolist()
+    closes = pd.Series(np.array(base + dump + bounce), index=_ts(78))
+    p = SqueezeParams(min_bbw_percentile=0.0)
+    res = backtest_bb_squeeze(closes, params=p, daily_closes=None)
+    assert len(res.trades) >= 1
+
+
 def test_buy_and_hold_benchmark_matches_first_to_last_ratio() -> None:
     closes = pd.Series(np.linspace(100, 150, 300), index=_ts(300))
     res = backtest_bb_squeeze(closes, initial_equity=Decimal("1000"))

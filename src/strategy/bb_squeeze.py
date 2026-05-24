@@ -105,6 +105,7 @@ def evaluate_bb_squeeze(
     armed_at_index: int | None,
     entry_bar_index: int | None,
     params: SqueezeParams | None = None,
+    trend_up: bool = True,
 ) -> SqueezeSignal:
     """Decide the action for the bar at `closes.iloc[-1]`.
 
@@ -113,6 +114,13 @@ def evaluate_bb_squeeze(
     (only meaningful when state == ARMED). `entry_bar_index` is the
     integer index of the bar we entered on (only meaningful when
     state == LONG). The CALLER persists these between bars.
+
+    `trend_up` is an external regime filter — typically the caller
+    computes it from a slower timeframe (e.g. daily SMA-200). When
+    False, an otherwise-valid trigger is blocked from becoming a BUY
+    so we don't catch falling knives in a confirmed downtrend.
+    Exits (LONG → FLAT) are NEVER blocked by the trend filter — once
+    we're in a position we always honor the exit signal.
 
     Returns a `SqueezeSignal` describing the action and the state we
     end up in after acting on this bar.
@@ -184,6 +192,18 @@ def evaluate_bb_squeeze(
                 **base,
             )
         if close_now > lower:
+            if not trend_up:
+                # Trigger fired but the regime filter says downtrend — skip
+                # the entry and stay armed (or eventually disarm via expiry).
+                return SqueezeSignal(
+                    action=SqueezeAction.HOLD,
+                    state_after=SqueezeState.ARMED,
+                    reason=(
+                        f"trigger blocked (trend down): close {close_now:.2f} "
+                        f"> lower BB {lower:.2f}, RSI {rsi_now:.1f}"
+                    ),
+                    **base,
+                )
             return SqueezeSignal(
                 action=SqueezeAction.BUY,
                 state_after=SqueezeState.LONG,
@@ -223,6 +243,15 @@ def evaluate_bb_squeeze(
             action=SqueezeAction.HOLD,
             state_after=SqueezeState.FLAT,
             reason=f"setup seen but BBW filter rejected (width {width:.4f})",
+            **base,
+        )
+    if not trend_up:
+        # Daily regime is down — don't even arm. Long mean-reversion in a
+        # confirmed downtrend is the dominant failure mode we observed.
+        return SqueezeSignal(
+            action=SqueezeAction.HOLD,
+            state_after=SqueezeState.FLAT,
+            reason=f"setup seen but trend filter rejected (trend down)",
             **base,
         )
     return SqueezeSignal(
