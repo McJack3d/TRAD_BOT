@@ -87,6 +87,27 @@ python -m scripts.backtest_trend --years 5  # detailed table
 python -m scripts.validate_trend            # walk-forward + out-of-sample
 ```
 
+### Intraday BB-squeeze strategy (experimental)
+
+A separate, higher-frequency strategy: Bollinger squeeze + RSI<25 entry,
+MACD-histogram / mid-band exit on intraday bars. NOT wired into the
+live bot yet — validate the numbers first.
+
+```bash
+# 6 months of 5-minute BTC bars:
+python -m scripts.backtest_bb_squeeze --months 6 --timeframe 5m
+
+# Tighten the volatility filter (require BBW above its 50th percentile):
+python -m scripts.backtest_bb_squeeze --months 6 --min-bbw-pct 50
+
+# Try 15m bars or 1h to compare:
+python -m scripts.backtest_bb_squeeze --months 6 --timeframe 15m
+```
+
+What to look for in the output: win rate ≥55%, net APR > buy-and-hold,
+max drawdown comparable to the SMA-200 strategy, and **enough trades
+that the result isn't a fluke** (at least ~30 over the window).
+
 ---
 
 ## Paper vs live
