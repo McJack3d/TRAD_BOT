@@ -1,10 +1,18 @@
 # trad-bot
 
-Funding-rate arbitrage bot for Binance. Delta-neutral cash-and-carry:
-long spot + short perp in equal notional, harvest funding every 8h.
+Two independent trading bots in one repository:
 
-See `docs/trading_bot_spec_v1.md` for the full spec. This README covers
-project layout, install, and operations.
+1. **Binance funding-rate arbitrage bot** — delta-neutral cash-and-carry
+   on Binance: long spot + short perp in equal notional, harvest funding
+   every 8h. Specified in `docs/trading_bot_spec_v1.md`.
+2. **IBKR sentiment bot** — long/short US equities on Interactive
+   Brokers driven by a two-stage sentiment funnel (FinBERT → LLM
+   gatekeeper) with a dollar-neutral overlay. Specified in
+   `docs/IBKR_SENTIMENT.md`.
+
+The two bots share no runtime state and can be deployed independently.
+This README covers the Binance bot; the IBKR sentiment bot is
+documented in `docs/IBKR_SENTIMENT.md`.
 
 ## Status
 
@@ -30,10 +38,15 @@ src/
   config.py        Pydantic-validated settings (env + YAML)
   killswitch.py    /var/lib/bot/KILL file watcher
   main.py          Entry point (asyncio)
-config/            live.yaml / paper.yaml / backtest.yaml
-scripts/           Download history, backtest, dry-run, tax export
-tests/             Unit (incl. adversarial risk-manager, e2e paper)
-deploy/            systemd unit + Ubuntu 24.04 setup script
+  ibkr_sentiment/  SECOND BOT — see docs/IBKR_SENTIMENT.md
+config/            live.yaml / paper.yaml / backtest.yaml / ibkr_sentiment.yaml
+scripts/           Download history, backtest, dry-run, tax export,
+                   run_ibkr_sentiment
+tests/             Unit (incl. adversarial risk-manager, e2e paper,
+                   IBKR sentiment funnel/risk/basket/e2e)
+deploy/            systemd unit + Ubuntu 24.04 setup script;
+                   ibkr_gateway/ docker-compose for IB Gateway + Redis
+                   + TimescaleDB + Qdrant
 .github/           CI workflow
 ```
 
@@ -93,11 +106,23 @@ only, no leverage. Closing the terminal stops the bot. Existing
 positions stay on Binance until you flatten or restart and let the
 signal decide.
 
+### IBKR sentiment bot (separate)
+
+Quickstart in paper mode (no IB connection, no LLM key needed):
+
+```bash
+python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
+```
+
+For dry-run / live, start IB Gateway via docker compose and add the
+appropriate `[ibkr,llm,redis]` extras. See `docs/IBKR_SENTIMENT.md`.
+
 ## Tests
 
 ```bash
-pytest                          # unit tests
+pytest                          # unit tests (Binance + IBKR sentiment)
 pytest -m integration           # integration (needs testnet keys)
+pytest tests/unit/test_ibkr_sentiment_*.py   # IBKR sentiment only
 ```
 
 ## Safety

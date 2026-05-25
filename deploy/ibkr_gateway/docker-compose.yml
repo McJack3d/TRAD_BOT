@@ -1,0 +1,75 @@
+# Headless IB Gateway + supporting services for the sentiment bot.
+#
+# IB Gateway image: gnzsnz/ib-gateway is the de-facto headless image
+# (TWS API + IBC + VNC for one-off debugging). Update IB credentials
+# via the bind-mounted .env file — never bake them into the image.
+#
+# Bring up only what you need:
+#   docker compose up -d ib-gateway redis              # minimum (paper)
+#   docker compose up -d ib-gateway redis postgres     # +TimescaleDB
+#   docker compose up -d ib-gateway redis postgres qdrant   # +RAG store
+
+version: "3.9"
+
+services:
+  ib-gateway:
+    image: gnzsnz/ib-gateway:stable
+    container_name: ibsent-ib-gateway
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${TWS_USERID:?TWS_USERID required}
+      TWS_PASSWORD: ${TWS_PASSWORD:?TWS_PASSWORD required}
+      TRADING_MODE: paper      # paper | live
+      VNC_SERVER_PASSWORD: ${VNC_SERVER_PASSWORD:-changeme}
+      READ_ONLY_API: "no"
+      BYPASS_WARNING: "yes"
+      TWS_ACCEPT_INCOMING: accept
+      TIME_ZONE: Etc/UTC
+    ports:
+      - "127.0.0.1:4001:4001"   # live gateway
+      - "127.0.0.1:4002:4002"   # paper gateway
+      - "127.0.0.1:5900:5900"   # VNC for one-off debugging only
+    healthcheck:
+      test: ["CMD", "/bin/bash", "-c", "echo > /dev/tcp/127.0.0.1/4002 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: ibsent-redis
+    restart: unless-stopped
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - ibsent_redis:/data
+
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: ibsent-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ibsent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+      POSTGRES_DB: ibsent
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - ibsent_pg:/var/lib/postgresql/data
+      - ./init-timescaledb.sql:/docker-entrypoint-initdb.d/init-timescaledb.sql:ro
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: ibsent-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - ibsent_qdrant:/qdrant/storage
+
+volumes:
+  ibsent_redis:
+  ibsent_pg:
+  ibsent_qdrant:

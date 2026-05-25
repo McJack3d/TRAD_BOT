@@ -1,0 +1,114 @@
+# IBKR sentiment bot — paper config.
+#
+#  mode: paper      — paper broker (in-process), pipeline runs end-to-end,
+#                     no IB connection required.
+#  mode: dry_run    — connects to IB Gateway, intercepts orders.
+#  mode: live       — real money. Only after the backtest acceptance
+#                     gates from docs/IBKR_SENTIMENT.md pass.
+
+mode: paper
+
+universe:
+  - symbol: AAPL
+    sector_etf: XLK
+    min_qty: "1"
+  - symbol: MSFT
+    sector_etf: XLK
+    min_qty: "1"
+  - symbol: NVDA
+    sector_etf: XLK
+    min_qty: "1"
+  - symbol: AMZN
+    sector_etf: XLY
+    min_qty: "1"
+  - symbol: TSLA
+    sector_etf: XLY
+    min_qty: "1"
+  - symbol: GOOGL
+    sector_etf: XLC
+    min_qty: "1"
+  - symbol: META
+    sector_etf: XLC
+    min_qty: "1"
+  - symbol: JPM
+    sector_etf: XLF
+    min_qty: "1"
+  - symbol: XOM
+    sector_etf: XLE
+    min_qty: "1"
+  - symbol: UNH
+    sector_etf: XLV
+    min_qty: "1"
+
+ibkr:
+  host: 127.0.0.1
+  port: 4002   # IB Gateway paper. Use 4001 for live, 7497 for TWS paper.
+  client_id: 17
+  readonly: false
+  connect_timeout_s: 15.0
+
+ingestion:
+  rss_feeds:
+    - https://feeds.reuters.com/reuters/businessNews
+    - https://feeds.reuters.com/reuters/companyNews
+    - https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&owner=include&count=40&output=atom
+  sec_filings_enabled: false
+  sec_user_agent: "trad-bot research contact@example.com"
+  poll_interval_s: 60
+  max_items_per_poll: 50
+  dedup_window_minutes: 240
+
+finbert:
+  model_name: ProsusAI/finbert
+  device: cpu
+  polarity_threshold: 0.55
+  confidence_threshold: 0.70
+  max_input_chars: 2000
+  batch_size: 16
+
+llm:
+  provider: stub        # stub | anthropic | openai | fingpt
+  model: claude-opus-4-7
+  temperature: 0.0
+  max_tokens: 800
+  max_concurrent: 4
+  request_timeout_s: 30.0
+  min_conviction: 0.55
+  default_source_weight: 0.5
+
+vector_store:
+  provider: memory      # memory | qdrant | chroma
+  collection: filings
+  embedding_dim: 384
+  top_k: 4
+
+rate_limit:
+  redis_url: null       # set to redis://host:6379/0 in production
+  orders_per_minute: 30
+  historical_requests_per_10min: 50
+  market_data_lines: 100
+
+signal:
+  rolling_window_minutes: 240
+  long_threshold: 0.55
+  short_threshold: -0.45
+  sma_window: 50
+  sma_confirm_pct: 0.0
+  rsi_window: 14
+  rsi_long_min: 35.0
+  rsi_short_max: 65.0
+  technical_confirm_required: true
+
+risk:
+  starting_equity_usd: "100000"
+  max_gross_exposure_pct: "1.50"
+  max_net_exposure_pct: "0.20"
+  max_position_pct: "0.05"
+  max_sector_pct: "0.30"
+  daily_loss_stop_pct: "0.02"
+  cumulative_loss_stop_pct: "0.10"
+  trailing_stop_pct: "0.05"
+  max_orders_per_minute: 20
+
+tick_seconds: 60
+db_url: sqlite+aiosqlite:///data/ibkr_sentiment.db

@@ -44,6 +44,29 @@ dev = [
 dashboard = [
     "streamlit>=1.32",
 ]
+# IBKR sentiment bot extras — each is independently optional so a
+# minimal install still passes the test suite.
+ibkr = [
+    "ib_insync>=0.9.86",
+]
+sentiment = [
+    "transformers>=4.40",
+    "torch>=2.2",
+]
+llm = [
+    "anthropic>=0.39",
+    "openai>=1.40",
+]
+redis = [
+    "redis>=5.0",
+]
+vector = [
+    "qdrant-client>=1.9",
+    "chromadb>=0.5",
+]
+postgres = [
+    "asyncpg>=0.29",
+]
 
 [project.scripts]
 trad-bot = "src.main:cli"
@@ -52,6 +75,7 @@ trad-backtest = "scripts.run_backtest:main"
 trad-dry-run = "scripts.run_dry_run:main"
 trad-tax-export = "scripts.tax_export:main"
 trad-download-history = "scripts.download_history:main"
+ibkr-sentiment-bot = "src.ibkr_sentiment.main:cli"
 
 [tool.setuptools.packages.find]
 where = ["."]
