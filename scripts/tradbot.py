@@ -740,6 +740,80 @@ async def cmd_backtest(args, console: Console) -> int:
     return 0
 
 
+async def cmd_install_app(args, console: Console) -> int:
+    """Build a double-clickable TradBot.app launcher."""
+    from src.macos_app import build_app
+
+    try:
+        app = build_app(_PROJECT_ROOT)
+    except SystemExit as e:
+        console.print(f"[red]✗[/] {e}")
+        return 1
+    console.print(
+        f"[green]✓[/] Built {app}\n"
+        f"  Double-click it (or find 'TradBot' in Launchpad / Spotlight) to\n"
+        f"  open the interactive menu in Terminal.\n"
+        f"\n[dim]It's a thin launcher — it always runs the current code, so\n"
+        f"no rebuild is needed after `git pull`.[/]"
+    )
+    return 0
+
+
+def _menu_namespace(**kw):
+    """Build a Namespace with the defaults the cmd_* handlers expect."""
+    import argparse as _ap
+
+    defaults = dict(force=False, yes=True, limit=20, interval=30, years=5, equity=1000.0)
+    defaults.update(kw)
+    return _ap.Namespace(**defaults)
+
+
+async def cmd_menu(args, console: Console) -> int:
+    """Interactive numbered menu — the entry point the .app launches."""
+    items: list[tuple[str, str, object, object]] = [
+        ("1", "Status", cmd_status, _menu_namespace()),
+        ("2", "Evaluate now (fetch + decide + trade)", cmd_evaluate, _menu_namespace()),
+        ("3", "Current signal (read-only)", cmd_signal, _menu_namespace()),
+        ("4", "Start trading", cmd_start, _menu_namespace()),
+        ("5", "Stop trading", cmd_stop, _menu_namespace()),
+        ("6", "Recent trades", cmd_trades, _menu_namespace()),
+        ("7", "Equity history", cmd_equity, _menu_namespace()),
+        ("8", "Flatten to cash", cmd_flatten, _menu_namespace(yes=False)),
+        ("9", "Config", cmd_config, _menu_namespace()),
+    ]
+    handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
+
+    while True:
+        console.print()
+        body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
+        body += "\n  [bold]0[/]  Quit"
+        mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
+        console.print(Panel(body, title=f"TradBot menu · {mode}", expand=False))
+        try:
+            choice = console.input("[bold]Choose[/] (0-9): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return 0
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return 0
+        entry = handlers.get(choice)
+        if entry is None:
+            console.print("[yellow]Unknown choice — pick 0-9.[/]")
+            continue
+        label, fn, ns = entry
+        console.rule(f"[dim]{label}[/]")
+        try:
+            await fn(ns, console)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+        try:
+            console.input("\n[dim]Press Enter to return to the menu...[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return 0
+
+
 # ---- entry -----------------------------------------------------------
 
 
@@ -780,6 +854,8 @@ def main() -> None:
     p_bt = sub.add_parser("backtest", help="Run a backtest with the current config.")
     p_bt.add_argument("--years", type=int, default=5)
     p_bt.add_argument("--equity", type=float, default=1000)
+    sub.add_parser("menu", help="Interactive menu (what the .app launches).")
+    sub.add_parser("install-app", help="Build a double-clickable TradBot.app (macOS).")
 
     p_ic = sub.add_parser(
         "install-cron",
@@ -816,6 +892,8 @@ def main() -> None:
         "uninstall-cron": cmd_uninstall_cron,
         "cron-status": cmd_cron_status,
         "logs": cmd_logs,
+        "menu": cmd_menu,
+        "install-app": cmd_install_app,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))
