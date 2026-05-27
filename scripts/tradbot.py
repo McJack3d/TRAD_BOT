@@ -769,7 +769,49 @@ def _menu_namespace(**kw):
 
 
 async def cmd_menu(args, console: Console) -> int:
-    """Interactive numbered menu — the entry point the .app launches."""
+    """Top-level menu: pick which bot to drive, then dispatch to its
+    submenu. The .app launcher always lands here.
+    """
+    while True:
+        body = (
+            "  [bold]1[/]  Binance trend bot (BTC SMA — daily eval, spot only)\n"
+            "  [bold]2[/]  IBKR sentiment bot (FinBERT → LLM funnel, US equities)\n"
+            "  [bold]0[/]  Quit"
+        )
+        binance_mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
+        ibsent_mode_env = os.environ.get("IBSENT_MODE", "paper").lower()
+        if ibsent_mode_env == "live":
+            ibsent_mode = "[red]LIVE[/]"
+        elif ibsent_mode_env == "dry_run":
+            ibsent_mode = "[yellow]DRY_RUN[/]"
+        else:
+            ibsent_mode = "[green]PAPER[/]"
+        title = f"TradBot · Binance {binance_mode} · IBKR {ibsent_mode}"
+        console.print(Panel(body, title=title, expand=False))
+        try:
+            choice = console.input("[bold]Choose bot[/] (0-2): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return 0
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return 0
+        if choice == "1":
+            rc = await _binance_menu(console)
+            if rc == -1:
+                return 0
+            continue
+        if choice == "2":
+            rc = await _ibsent_menu(console)
+            if rc == -1:
+                return 0
+            continue
+        console.print("[yellow]Unknown choice — pick 0-2.[/]")
+
+
+async def _binance_menu(console: Console) -> int:
+    """Submenu for the Binance trend bot. Returns -1 to quit the whole
+    app; 0 to return to the top-level chooser."""
     items: list[tuple[str, str, object, object]] = [
         ("1", "Status", cmd_status, _menu_namespace()),
         ("2", "Evaluate now (fetch + decide + trade)", cmd_evaluate, _menu_namespace()),
@@ -786,20 +828,22 @@ async def cmd_menu(args, console: Console) -> int:
     while True:
         console.print()
         body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
-        body += "\n  [bold]0[/]  Quit"
+        body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
         mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
-        console.print(Panel(body, title=f"TradBot menu · {mode}", expand=False))
+        console.print(Panel(body, title=f"Binance trend bot · {mode}", expand=False))
         try:
-            choice = console.input("[bold]Choose[/] (0-9): ").strip().lower()
+            choice = console.input("[bold]Choose[/] (0-9, b): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
-            return 0
+            return -1
         if choice in ("0", "q", "quit", "exit"):
             console.print("[dim]Bye.[/]")
+            return -1
+        if choice in ("b", "back"):
             return 0
         entry = handlers.get(choice)
         if entry is None:
-            console.print("[yellow]Unknown choice — pick 0-9.[/]")
+            console.print("[yellow]Unknown choice — pick 0-9 or 'b'.[/]")
             continue
         label, fn, ns = entry
         console.rule(f"[dim]{label}[/]")
@@ -811,7 +855,54 @@ async def cmd_menu(args, console: Console) -> int:
             console.input("\n[dim]Press Enter to return to the menu...[/]")
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
+            return -1
+
+
+async def _ibsent_menu(console: Console) -> int:
+    """Submenu for the IBKR sentiment bot. Returns -1 to quit, 0 to go
+    back to the top-level chooser."""
+    from scripts.tradbot_ibsent import menu_items
+
+    items = menu_items()
+    handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
+
+    while True:
+        console.print()
+        body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
+        body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
+        ibsent_mode_env = os.environ.get("IBSENT_MODE", "paper").lower()
+        if ibsent_mode_env == "live":
+            mode = "[red]LIVE[/]"
+        elif ibsent_mode_env == "dry_run":
+            mode = "[yellow]DRY_RUN[/]"
+        else:
+            mode = "[green]PAPER[/]"
+        console.print(Panel(body, title=f"IBKR sentiment bot · {mode}", expand=False))
+        try:
+            choice = console.input("[bold]Choose[/] (0-9, b): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return -1
+        if choice in ("b", "back"):
             return 0
+        entry = handlers.get(choice)
+        if entry is None:
+            console.print("[yellow]Unknown choice — pick 0-9 or 'b'.[/]")
+            continue
+        label, fn, ns = entry
+        console.rule(f"[dim]{label}[/]")
+        try:
+            await fn(ns, console)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+        try:
+            console.input("\n[dim]Press Enter to return to the menu...[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
 
 
 # ---- entry -----------------------------------------------------------
@@ -872,6 +963,11 @@ def main() -> None:
     p_logs.add_argument("--lines", type=int, default=50)
     p_logs.add_argument("--errors", action="store_true", help="Tail stderr instead.")
 
+    # IBKR sentiment bot subcommands (ibsent-*).
+    from scripts.tradbot_ibsent import HANDLERS as IBSENT_HANDLERS
+    from scripts.tradbot_ibsent import register_subparsers as _register_ibsent
+    _register_ibsent(sub)
+
     args = parser.parse_args()
     console = Console()
     handler = {
@@ -894,6 +990,7 @@ def main() -> None:
         "logs": cmd_logs,
         "menu": cmd_menu,
         "install-app": cmd_install_app,
+        **IBSENT_HANDLERS,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

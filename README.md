@@ -82,9 +82,36 @@ python -m scripts.run_dry_run --config config/paper.yaml
 BOT_ENV=live python -m src.main --config config/live.yaml
 ```
 
-### Laptop bot — BTC SMA trend follower (run when laptop is on)
+### Laptop bot — unified TradBot menu (run when laptop is on)
 
-Paper mode (no keys needed):
+```bash
+# Build the double-clickable TradBot.app launcher (macOS):
+tradbot install-app
+# Double-click ~/Applications/TradBot.app → top-level picker:
+#   1. Binance trend bot   2. IBKR sentiment bot   0. Quit
+```
+
+The same menu is reachable from the terminal:
+
+```bash
+tradbot menu
+```
+
+Or drive either bot directly with subcommands:
+
+```bash
+# Binance trend bot (BTC SMA)
+tradbot status                       # current state
+tradbot evaluate                     # tick once
+tradbot watch                        # live status loop
+
+# IBKR sentiment bot
+tradbot ibsent-status
+tradbot ibsent-tick
+tradbot ibsent-watch
+```
+
+Streamlit dashboard for the BTC trend bot (paper mode, no keys needed):
 
 ```bash
 streamlit run src/app/streamlit_app.py

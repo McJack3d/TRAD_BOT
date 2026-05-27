@@ -132,13 +132,36 @@ pip install -e ".[dev,ibkr,sentiment,llm,redis,vector,postgres]"
 
 ## Run
 
-```bash
-# paper, fully self-contained (no IB, no LLM key needed)
-python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
+Three equivalent entry points — pick whichever fits your workflow.
 
-# or via the installed script
+```bash
+# 1. As a long-running daemon (recommended for VPS deploys)
+python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
+# or, with the installed script:
 ibkr-sentiment-bot --config config/ibkr_sentiment.yaml
+
+# 2. Via the unified `tradbot` CLI (handy on a laptop / from the menu)
+tradbot ibsent-status        # account + open positions
+tradbot ibsent-tick          # one full evaluation cycle
+tradbot ibsent-watch         # continuous loop, Ctrl+C to stop
+tradbot ibsent-news --title "AAPL beats record growth" --symbol AAPL
+tradbot ibsent-signals       # last 20 structured signals
+tradbot ibsent-trades        # last 20 trades
+tradbot ibsent-equity        # equity history
+tradbot ibsent-flatten --yes # emergency close all
+tradbot ibsent-config        # show resolved config
+# Set the mode without editing YAML:
+IBSENT_MODE=dry_run tradbot ibsent-tick
+
+# 3. From the macOS .app launcher
+tradbot install-app          # creates ~/Applications/TradBot.app
+# Double-click TradBot.app → opens Terminal → top-level bot picker:
+#   1. Binance trend bot
+#   2. IBKR sentiment bot
 ```
+
+The `.app` is a thin launcher (no Python is bundled) — it always runs
+the current code, so `git pull` is enough to update it.
 
 For dry-run / live, start IB Gateway first:
 
