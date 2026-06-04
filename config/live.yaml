@@ -1,6 +1,6 @@
 # Live trading parameters. Use only after acceptance gates (§15) are met.
 mode: live
-starting_equity_eur: "1000"
+starting_equity_usdt: "1000"
 
 symbols:
   - spot: BTC/USDT

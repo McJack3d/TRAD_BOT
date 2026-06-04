@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -96,7 +96,11 @@ class BotConfig(BaseModel):
     """Top-level config tree."""
 
     mode: Mode = Mode.PAPER
-    starting_equity_eur: Decimal = Decimal("1000")
+    # Account is funded and settled in USDT. The legacy YAML/key
+    # `starting_equity_eur` is still accepted (see the validator below)
+    # so old configs keep working, but the canonical name is USDT to
+    # match what the bot actually trades and snapshots.
+    starting_equity_usdt: Decimal = Decimal("1000")
     symbols: list[SymbolConfig]
     strategy: StrategyConfig = Field(default_factory=StrategyConfig)
     risk: RiskConfig = Field(default_factory=RiskConfig)
@@ -104,6 +108,23 @@ class BotConfig(BaseModel):
     fees: FeesConfig = Field(default_factory=FeesConfig)
     monitoring: MonitoringConfig = Field(default_factory=MonitoringConfig)
     backtest: BacktestConfig = Field(default_factory=BacktestConfig)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_equity_key(cls, data: Any) -> Any:
+        """Map the legacy `starting_equity_eur` key onto the canonical
+        `starting_equity_usdt`. Accepts both YAML files and kwargs so
+        existing configs and tests keep working unchanged."""
+        if isinstance(data, dict) and "starting_equity_eur" in data:
+            data.setdefault("starting_equity_usdt", data["starting_equity_eur"])
+            data.pop("starting_equity_eur", None)
+        return data
+
+    @property
+    def starting_equity_eur(self) -> Decimal:
+        """Backwards-compatible alias. The account is USDT-denominated;
+        this returns the same value as `starting_equity_usdt`."""
+        return self.starting_equity_usdt
 
     @classmethod
     def from_yaml(cls, path: str | Path) -> BotConfig:

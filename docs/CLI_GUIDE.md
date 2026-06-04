@@ -46,6 +46,34 @@ Run `source .venv/bin/activate` first, then:
 Tip — install the package once (`pip install -e .`) and the prefix
 shortens to just `tradbot status`, `tradbot menu`, etc.
 
+`tradbot menu` is now a **bot picker** — it opens a top-level menu where
+you choose which bot to drive:
+
+1. **Binance trend bot** (the BTC SMA strategy above)
+2. **IBKR sentiment bot** (see `docs/IBKR_SENTIMENT.md`)
+3. **Funding-arb daemon monitor** (read-only — see below)
+
+`tradbot status` now also shows **peak equity** and **drawdown from
+peak**, so you can see at a glance how far below your high-water mark
+the account is sitting.
+
+### Monitoring the funding-arb daemon
+
+The funding-arb daemon (`src/main.py`, run on a VPS) persists its state
+to `data/bot.db`. These read-only commands surface that state — most
+importantly the daily and cumulative loss-stops, with a gauge showing
+how much of each loss budget has been consumed:
+
+| Command | What it does |
+|---|---|
+| `tradbot farb-status` | System status (ACTIVE/HALTED), equity, daily & cumulative PnL, and a headroom gauge for each loss-stop. |
+| `tradbot farb-positions` | Open delta-neutral pairs. |
+| `tradbot farb-equity` | Recent equity snapshots with daily/cumulative PnL. |
+
+Point it at a different database or config with the `BOT_DB_PATH` and
+`BOT_CONFIG` environment variables (handy for inspecting a copy of the
+VPS database on your laptop).
+
 ---
 
 ## Typical day

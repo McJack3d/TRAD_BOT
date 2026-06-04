@@ -22,6 +22,7 @@ from src.logging_setup import log
 from src.risk.checks import PreTradeContext, run_pre_trade_checks
 from src.state.db import Database
 from src.state.models import SystemStatusEnum
+from src.state.pnl import ensure_utc
 
 FlattenCallback = Callable[[str], Awaitable[None]]
 NotifyCallback = Callable[[str, str], Awaitable[None]]
@@ -100,9 +101,11 @@ class RiskManager:
         if status.status == SystemStatusEnum.HALTED:
             return
 
-        # Reconciliation freshness.
-        if status.last_reconciliation_ok is None or (
-            datetime.now(UTC) - status.last_reconciliation_ok
+        # Reconciliation freshness. The stored timestamp comes back from
+        # SQLite tz-naive, so normalize before comparing to an aware now.
+        last_recon = ensure_utc(status.last_reconciliation_ok)
+        if last_recon is None or (
+            datetime.now(UTC) - last_recon
             > timedelta(seconds=self.cfg.reconciliation_stale_seconds)
         ):
             await self._halt("reconciliation stale")
@@ -141,7 +144,9 @@ class RiskManager:
         # Daily and cumulative loss stops.
         snap = await self.db.latest_snapshot()
         if snap is not None:
-            daily_total = snap.realized_pnl_daily
+            # Daily stop watches realized AND open-position drawdown, so a
+            # losing-but-still-open position can trip it before it closes.
+            daily_total = snap.realized_pnl_daily + snap.unrealized_pnl
             stop_daily = self.starting_equity * self.cfg.daily_loss_stop_pct
             if daily_total <= -stop_daily:
                 await self._halt(f"daily loss stop hit: {daily_total} <= -{stop_daily}")

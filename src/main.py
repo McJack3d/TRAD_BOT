@@ -6,8 +6,6 @@ import argparse
 import asyncio
 import signal
 import sys
-from datetime import UTC, datetime
-from decimal import Decimal
 from pathlib import Path
 
 from src.adapters.binance import BinanceAdapter
@@ -24,7 +22,7 @@ from src.monitoring.telegram_bot import TelegramNotifier
 from src.reconciliation.reconciler import Reconciler
 from src.risk.manager import RiskManager
 from src.state.db import Database
-from src.state.models import StateSnapshot
+from src.state.pnl import build_state_snapshot
 from src.strategy.funding_arb import FundingArbStrategy
 
 
@@ -35,7 +33,7 @@ async def run(config_path: str, kill_file: str) -> None:
     log.info("bot.starting", mode=cfg.mode.value, config=config_path)
 
     db = Database(secrets.bot_db_path)
-    await db.init(starting_equity=cfg.starting_equity_eur)
+    await db.init(starting_equity=cfg.starting_equity_usdt)
 
     exchange = BinanceAdapter(
         api_key=secrets.binance_api_key,
@@ -97,7 +95,7 @@ async def run(config_path: str, kill_file: str) -> None:
         db=db,
         exchange=exchange,
         cfg=cfg.risk,
-        starting_equity=cfg.starting_equity_eur,
+        starting_equity=cfg.starting_equity_usdt,
         on_flatten=execution.emergency_flatten_all,
         on_notify=notify,
     )
@@ -123,6 +121,7 @@ async def run(config_path: str, kill_file: str) -> None:
         market_data=market_data,
         risk=risk,
         execution=execution,
+        exchange=exchange,
     )
 
     funding_poller = FundingPoller(
@@ -168,7 +167,10 @@ async def run(config_path: str, kill_file: str) -> None:
         while not stop_event.is_set():
             try:
                 await strategy.evaluate_all()
-                await _snapshot_equity(db, exchange, cfg.starting_equity_eur)
+                snap = await build_state_snapshot(
+                    db, exchange, cfg.starting_equity_usdt
+                )
+                await db.add_snapshot(snap)
             except Exception as e:
                 log.exception("bot.tick.error", error=str(e))
             try:
@@ -195,29 +197,6 @@ async def run(config_path: str, kill_file: str) -> None:
     await exchange.close()
     await db.close()
     log.info("bot.shutdown.done")
-
-
-async def _snapshot_equity(
-    db: Database, exchange, starting_equity: Decimal
-) -> None:
-    try:
-        balances = await exchange.fetch_balances()
-        usdt = sum(
-            (b.total for b in balances.values() if b.asset == "USDT"),
-            start=Decimal("0"),
-        )
-        snap = StateSnapshot(
-            ts=datetime.now(UTC),
-            equity_usdt=usdt or starting_equity,
-            spot_balance_usdt=Decimal("0"),
-            perp_balance_usdt=Decimal("0"),
-            unrealized_pnl=Decimal("0"),
-            realized_pnl_daily=Decimal("0"),
-            realized_pnl_cumulative=Decimal("0"),
-        )
-        await db.add_snapshot(snap)
-    except Exception as e:
-        log.warning("bot.snapshot.error", error=str(e))
 
 
 def cli() -> None:

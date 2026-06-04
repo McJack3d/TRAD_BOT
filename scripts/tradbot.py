@@ -150,6 +150,33 @@ async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ig
     return bot, ex, db
 
 
+async def _equity_peak_drawdown(
+    db: Database, current_equity: Decimal
+) -> tuple[Decimal | None, float]:
+    """Return (peak_equity, drawdown_fraction) from recorded snapshots,
+    counting the live equity too so a new high shows up instantly.
+    drawdown is (current/peak - 1), i.e. 0 at a fresh high, negative below."""
+    from sqlalchemy import func, select
+
+    from src.state.models import StateSnapshot
+
+    try:
+        async with db.session() as s:
+            recorded_peak = (
+                await s.execute(select(func.max(StateSnapshot.equity_usdt)))
+            ).scalar()
+    except Exception:
+        recorded_peak = None
+    candidates = [v for v in (recorded_peak, current_equity) if v is not None]
+    if not candidates:
+        return None, 0.0
+    peak = max(Decimal(str(c)) for c in candidates)
+    if peak <= 0:
+        return peak, 0.0
+    dd = float(current_equity / peak - 1)
+    return peak, dd
+
+
 def _mode_banner(console: Console) -> None:
     if LIVE:
         console.print(
@@ -199,6 +226,14 @@ async def cmd_status(args, console: Console) -> int:
             table.add_row(f"{s.base_asset} price", f"${s.last_price:,.2f}")
         equity = s.usdt_qty + s.btc_qty * s.last_price
         table.add_row(f"Equity ({s.quote_asset})", f"${equity:,.2f}")
+
+        # Peak equity + drawdown from the recorded snapshots (plus the
+        # live equity, so a fresh high shows immediately).
+        peak, dd = await _equity_peak_drawdown(db, equity)
+        if peak is not None and peak > 0:
+            table.add_row("Peak equity", f"${peak:,.2f}")
+            dd_colour = "green" if dd >= 0 else ("yellow" if dd > -0.1 else "red")
+            table.add_row("Drawdown from peak", f"[{dd_colour}]{dd:.2%}[/]")
 
         # If IN, surface useful position economics.
         if s.current_state == TrendState.IN and s.last_price > 0 and s.btc_qty > 0:
@@ -776,6 +811,7 @@ async def cmd_menu(args, console: Console) -> int:
         body = (
             "  [bold]1[/]  Binance trend bot (BTC SMA — daily eval, spot only)\n"
             "  [bold]2[/]  IBKR sentiment bot (FinBERT → LLM funnel, US equities)\n"
+            "  [bold]3[/]  Funding-arb daemon (read-only monitor + loss-stops)\n"
             "  [bold]0[/]  Quit"
         )
         binance_mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
@@ -789,7 +825,7 @@ async def cmd_menu(args, console: Console) -> int:
         title = f"TradBot · Binance {binance_mode} · IBKR {ibsent_mode}"
         console.print(Panel(body, title=title, expand=False))
         try:
-            choice = console.input("[bold]Choose bot[/] (0-2): ").strip().lower()
+            choice = console.input("[bold]Choose bot[/] (0-3): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return 0
@@ -806,7 +842,12 @@ async def cmd_menu(args, console: Console) -> int:
             if rc == -1:
                 return 0
             continue
-        console.print("[yellow]Unknown choice — pick 0-2.[/]")
+        if choice == "3":
+            rc = await _farb_menu(console)
+            if rc == -1:
+                return 0
+            continue
+        console.print("[yellow]Unknown choice — pick 0-3.[/]")
 
 
 async def _binance_menu(console: Console) -> int:
@@ -844,6 +885,48 @@ async def _binance_menu(console: Console) -> int:
         entry = handlers.get(choice)
         if entry is None:
             console.print("[yellow]Unknown choice — pick 0-9 or 'b'.[/]")
+            continue
+        label, fn, ns = entry
+        console.rule(f"[dim]{label}[/]")
+        try:
+            await fn(ns, console)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+        try:
+            console.input("\n[dim]Press Enter to return to the menu...[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+
+
+async def _farb_menu(console: Console) -> int:
+    """Submenu for the funding-arb daemon monitor (read-only). Returns
+    -1 to quit, 0 to go back to the top-level chooser."""
+    from scripts.tradbot_farb import menu_items
+
+    items = menu_items()
+    handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
+
+    while True:
+        console.print()
+        body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
+        body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
+        console.print(
+            Panel(body, title="Funding-arb daemon · read-only monitor", expand=False)
+        )
+        try:
+            choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return -1
+        if choice in ("b", "back"):
+            return 0
+        entry = handlers.get(choice)
+        if entry is None:
+            console.print("[yellow]Unknown choice — pick 0-3 or 'b'.[/]")
             continue
         label, fn, ns = entry
         console.rule(f"[dim]{label}[/]")
@@ -968,6 +1051,11 @@ def main() -> None:
     from scripts.tradbot_ibsent import register_subparsers as _register_ibsent
     _register_ibsent(sub)
 
+    # Funding-arb daemon monitor subcommands (farb-*).
+    from scripts.tradbot_farb import HANDLERS as FARB_HANDLERS
+    from scripts.tradbot_farb import register_subparsers as _register_farb
+    _register_farb(sub)
+
     args = parser.parse_args()
     console = Console()
     handler = {
@@ -991,6 +1079,7 @@ def main() -> None:
         "menu": cmd_menu,
         "install-app": cmd_install_app,
         **IBSENT_HANDLERS,
+        **FARB_HANDLERS,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

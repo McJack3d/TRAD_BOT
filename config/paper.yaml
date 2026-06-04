@@ -1,6 +1,6 @@
 # Paper / dry-run config. Uses Binance testnet by default (set BINANCE_TESTNET=true).
 mode: paper
-starting_equity_eur: "1000"
+starting_equity_usdt: "1000"
 
 symbols:
   - spot: BTC/USDT

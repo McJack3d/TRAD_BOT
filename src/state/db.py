@@ -210,6 +210,43 @@ class Database:
                 (p.payment for p in res.scalars().all()), start=Decimal("0")
             )
 
+    async def total_funding(self) -> Decimal:
+        """All-time funding collected (positive = bot received)."""
+        async with self._session() as s:
+            res = await s.execute(select(FundingPayment))
+            return sum((p.payment for p in res.scalars().all()), start=Decimal("0"))
+
+    # ---- realized PnL -------------------------------------------------
+
+    async def realized_position_pnl_since(self, since: datetime) -> Decimal:
+        """Sum of realized PnL from positions CLOSED on/after `since`.
+
+        This is the spot+perp round-trip PnL recorded by
+        `close_position`. Funding income is tracked separately via the
+        funding-payment table — combine the two for total realized PnL.
+        """
+        async with self._session() as s:
+            res = await s.execute(
+                select(Position).where(
+                    (Position.status == PositionStatus.CLOSED)
+                    & (Position.closed_at.is_not(None))
+                    & (Position.closed_at >= since)
+                )
+            )
+            return sum(
+                (p.realized_pnl for p in res.scalars().all()), start=Decimal("0")
+            )
+
+    async def total_realized_position_pnl(self) -> Decimal:
+        """All-time realized PnL from closed positions."""
+        async with self._session() as s:
+            res = await s.execute(
+                select(Position).where(Position.status == PositionStatus.CLOSED)
+            )
+            return sum(
+                (p.realized_pnl for p in res.scalars().all()), start=Decimal("0")
+            )
+
     # ---- snapshots ----------------------------------------------------
 
     async def add_snapshot(self, snap: StateSnapshot) -> StateSnapshot:

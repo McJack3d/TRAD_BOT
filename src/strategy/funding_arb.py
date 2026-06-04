@@ -7,23 +7,31 @@ to open or close.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
+from src.adapters.exchange_base import ExchangeAdapter
 from src.config import BotConfig
-from src.data.market_data import MarketData
 from src.execution.engine import ExecutionEngine
 from src.logging_setup import log
 from src.risk.checks import PreTradeContext
 from src.risk.manager import RiskManager
 from src.state.db import Database
 from src.state.models import SystemStatusEnum
+from src.state.pnl import ensure_utc
 from src.strategy.signals import (
     EntrySignal,
     ExitSignal,
     PositionView,
     evaluate_signal,
 )
+
+if TYPE_CHECKING:
+    # Only needed for type hints. Imported lazily so this module loads
+    # even when the live market-data package isn't present (e.g. unit
+    # tests that drive the strategy with a stub market-data object).
+    from src.data.market_data import MarketData
 
 
 class FundingArbStrategy:
@@ -34,12 +42,16 @@ class FundingArbStrategy:
         market_data: MarketData,
         risk: RiskManager,
         execution: ExecutionEngine,
+        exchange: ExchangeAdapter | None = None,
     ):
         self.cfg = cfg
         self.db = db
         self.market_data = market_data
         self.risk = risk
         self.execution = execution
+        # Optional — only used for the clock-drift pre-trade check. When
+        # absent (e.g. some tests) drift is reported as 0.
+        self.exchange = exchange
 
     async def evaluate_all(self) -> None:
         status = await self.db.get_status()
@@ -105,12 +117,14 @@ class FundingArbStrategy:
             per_symbol_exposure[p.symbol] = per_symbol_exposure.get(p.symbol, Decimal("0")) + notional_p
             total_exposure += notional_p
 
-        # Conservative defaults for a fresh-entry pre-trade: assume the post-order
-        # short leg has full liquidation headroom. The continuous risk monitor will
-        # tighten this once the position is live and the exchange reports a real
-        # liquidation price.
-        snap = self.market_data.get(symbol)
-        proposed_liq_distance_pct = Decimal("0.50")
+        # Post-order liquidation headroom for a fresh isolated short.
+        # At leverage L the perp leg can absorb roughly a (1/L) adverse
+        # price move before liquidation, so we express the headroom as
+        # 1/L. With the default leverage 2 this is 0.50 — the value that
+        # used to be hardcoded — but now it actually tightens as leverage
+        # rises (L=4 → 0.25, which the 0.30 pre-trade floor rejects).
+        leverage = max(1, self.cfg.strategy.perp_leverage)
+        proposed_liq_distance_pct = Decimal("1") / Decimal(leverage)
 
         status = await self.db.get_status()
         latest = await self.db.latest_snapshot()
@@ -118,9 +132,18 @@ class FundingArbStrategy:
         daily_unrealized = latest.unrealized_pnl if latest else Decimal("0")
         cumulative_realized = latest.realized_pnl_cumulative if latest else Decimal("0")
 
+        # Reconciliation freshness — mirror the continuous monitor's gate
+        # so we never open into a stale-state window. The stored timestamp
+        # comes back tz-naive from SQLite; normalize before comparing.
+        last_recon = ensure_utc(status.last_reconciliation_ok)
+        recon_ok = last_recon is not None and (
+            datetime.now(UTC) - last_recon
+            <= timedelta(seconds=self.cfg.risk.reconciliation_stale_seconds)
+        )
+
         return PreTradeContext(
             equity=equity,
-            starting_equity=self.cfg.starting_equity_eur,
+            starting_equity=self.cfg.starting_equity_usdt,
             total_exposure=total_exposure,
             per_symbol_exposure=per_symbol_exposure,
             proposed_symbol=symbol,
@@ -130,13 +153,27 @@ class FundingArbStrategy:
             daily_realized_pnl=daily_realized,
             daily_unrealized_pnl=daily_unrealized,
             cumulative_realized_pnl=cumulative_realized,
-            reconciliation_ok=True,  # checked elsewhere by stale gate
+            reconciliation_ok=recon_ok,
             system_status=status.status,
-            clock_drift_ms=0,
+            clock_drift_ms=await self._measure_clock_drift(),
         )
+
+    async def _measure_clock_drift(self) -> int:
+        """Local-vs-exchange clock drift in ms. Returns 0 on fetch
+        failure (so a transient REST hiccup never blocks trading), but
+        logs it — a persistent failure shows up in the logs."""
+        if self.exchange is None:
+            return 0
+        try:
+            server_ms = await self.exchange.fetch_server_time()
+        except Exception as e:  # noqa: BLE001
+            log.warning("strategy.clock_drift.fetch_failed", error=str(e))
+            return 0
+        local_ms = int(datetime.now(UTC).timestamp() * 1000)
+        return abs(local_ms - server_ms)
 
     async def _estimate_equity(self) -> Decimal:
         snap = await self.db.latest_snapshot()
         if snap:
             return snap.equity_usdt
-        return self.cfg.starting_equity_eur
+        return self.cfg.starting_equity_usdt

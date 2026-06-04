@@ -107,7 +107,8 @@ What "clean dry-run" means (§7 gate):
 1. Set `BINANCE_TESTNET=false` in `.env`.
 2. Set the live API key (no-withdrawal, IP-whitelisted to the VPS).
 3. Deposit €100–150 worth of USDT split across spot + perp accounts.
-4. Edit `config/live.yaml`: `starting_equity_eur: "150"` (or similar).
+4. Edit `config/live.yaml`: `starting_equity_usdt: "150"` (or similar).
+   (The legacy `starting_equity_eur` key is still accepted for old configs.)
 5. `sudo systemctl restart trad-bot`.
 6. Watch closely for 14 days. Read `/status` daily; verify the daily
    email digest arrives.

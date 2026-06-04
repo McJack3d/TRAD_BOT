@@ -1,5 +1,5 @@
 mode: backtest
-starting_equity_eur: "1000"
+starting_equity_usdt: "1000"
 
 symbols:
   - spot: BTC/USDT
