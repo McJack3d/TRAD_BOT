@@ -12,7 +12,7 @@ Examples:
     python -m scripts.backtest_regime_switch
 
     # One symbol/timeframe, 12 months, no funding model
-    python -m scripts.backtest_regime_switch --symbols BTC/USDT --timeframes 1h \
+    python -m scripts.backtest_regime_switch --symbols BTC/USDT --timeframes 1h \\
         --months 12 --no-funding
 
     # Coarse parameter sweep over ADX threshold x ATR stop multiple
@@ -22,7 +22,9 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
+import traceback
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -41,16 +43,19 @@ GATE_MAX_DD = -0.35
 GATE_MIN_TRADES = 100
 
 
-def _load(symbol: str, timeframe: str, months: int, refresh: bool, use_funding: bool):
-    from src.data.history import load_funding, load_ohlcv
+async def _load_async(
+    symbol: str, timeframe: str, months: int, refresh: bool, use_funding: bool
+):
+    """Load OHLCV + (optionally) funding via the async data API."""
+    from src.data.history import load_funding_async, load_ohlcv_async
 
-    df = load_ohlcv(symbol, timeframe, months=months, refresh=refresh)
+    df = await load_ohlcv_async(symbol, timeframe, months=months, refresh=refresh)
     funding = None
     if use_funding:
         try:
-            funding = load_funding(symbol, months=months, refresh=refresh)
+            funding = await load_funding_async(symbol, months=months, refresh=refresh)
         except Exception:
-            funding = None
+            funding = None  # funding is optional; failure must not block the OHLCV run
     return df, funding
 
 
@@ -63,14 +68,41 @@ def _gate_cell(stats: dict) -> str:
     return "[green]PASS[/]" if ok else "[yellow]review[/]"
 
 
-def _run_one(args, console: Console, symbol: str, timeframe: str) -> dict | None:
+def _explain_download_failure(e: Exception) -> str:
+    """Map an exception to a human-readable diagnosis. The first version
+    of this CLI printed 'check network access to Binance' for ANY
+    failure, which hid a nested-asyncio bug for over a release."""
+    msg = str(e)
+    if isinstance(e, RuntimeError) and "event loop" in msg:
+        return (
+            "internal: sync data loader called from inside an event loop. "
+            "Use the async API. (This is a bug — please report.)"
+        )
+    if "geo" in msg.lower() or "restricted" in msg.lower() or "451" in msg:
+        return "Binance geo-block — run on the Lightsail (Tokyo) box."
+    if "Name or service not known" in msg or "Temporary failure" in msg:
+        return "DNS failure — check the box has outbound DNS/443."
+    if "exchangeInfo" in msg or "ExchangeNotAvailable" in msg:
+        return "Binance refused the request (geo-block or temporary outage)."
+    return f"download failed ({type(e).__name__}): {msg[:160]}"
+
+
+async def _run_one(
+    args, console: Console, symbol: str, timeframe: str
+) -> dict | None:
     try:
-        df, funding = _load(symbol, timeframe, args.months, args.refresh, not args.no_funding)
+        df, funding = await _load_async(
+            symbol, timeframe, args.months, args.refresh, not args.no_funding
+        )
     except Exception as e:  # noqa: BLE001
-        console.print(f"[red]✗[/] {symbol} {timeframe}: download failed — {e}")
+        console.print(f"[red]✗[/] {symbol} {timeframe}: {_explain_download_failure(e)}")
+        if args.debug:
+            console.print(f"[dim]{traceback.format_exc()}[/]")
         return None
     if df.empty or len(df) < 300:
-        console.print(f"[yellow]⚠[/] {symbol} {timeframe}: only {len(df)} bars — skipping")
+        console.print(
+            f"[yellow]⚠[/] {symbol} {timeframe}: only {len(df)} bars — skipping"
+        )
         return None
     res = backtest_regime_switch(
         df,
@@ -107,7 +139,6 @@ def _scorecard(rows: list[dict], console: Console) -> None:
             _gate_cell(s),
         )
     console.print(table)
-    # Per-leg attribution for the best row.
     if rows:
         best = max(rows, key=lambda s: s["sharpe"])
         legs = ", ".join(f"{k or 'n/a'}: ${v:,.0f}" for k, v in best.get("pnl_by_leg", {}).items())
@@ -124,15 +155,19 @@ def _scorecard(rows: list[dict], console: Console) -> None:
     )
 
 
-def _sweep(args, console: Console) -> None:
+async def _sweep(args, console: Console) -> None:
     grid_adx = [20.0, 25.0, 30.0]
     grid_atr = [1.5, 2.0, 3.0]
     for symbol in args.symbols:
         for timeframe in args.timeframes:
             try:
-                df, funding = _load(symbol, timeframe, args.months, args.refresh, not args.no_funding)
+                df, funding = await _load_async(
+                    symbol, timeframe, args.months, args.refresh, not args.no_funding
+                )
             except Exception as e:  # noqa: BLE001
-                console.print(f"[red]✗[/] {symbol} {timeframe}: {e}")
+                console.print(f"[red]✗[/] {symbol} {timeframe}: {_explain_download_failure(e)}")
+                if args.debug:
+                    console.print(f"[dim]{traceback.format_exc()}[/]")
                 continue
             if df.empty or len(df) < 300:
                 console.print(f"[yellow]⚠[/] {symbol} {timeframe}: too few bars")
@@ -169,6 +204,28 @@ def _sweep(args, console: Console) -> None:
                 )
 
 
+async def run_backtest_from_args(args, console: Console) -> int:
+    """Async entry point — invoked by both the CLI and the tradbot menu."""
+    if args.sweep:
+        await _sweep(args, console)
+        return 0
+    rows: list[dict] = []
+    for symbol in args.symbols:
+        for timeframe in args.timeframes:
+            console.print(f"[dim]running {symbol} {timeframe}…[/]")
+            stats = await _run_one(args, console, symbol, timeframe)
+            if stats:
+                rows.append(stats)
+    if rows:
+        _scorecard(rows, console)
+        return 0
+    console.print(
+        "[red]No results.[/] If the only errors above were 'Binance geo-block', "
+        "you're not on the Lightsail Tokyo box. If they say 'internal', file a bug."
+    )
+    return 1
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the regime-switch strategy.")
     parser.add_argument("--symbols", default="BTC/USDT,ETH/USDT")
@@ -183,26 +240,14 @@ def main() -> None:
     parser.add_argument("--no-funding", action="store_true", help="Skip the funding cost model.")
     parser.add_argument("--refresh", action="store_true", help="Force re-download (ignore cache).")
     parser.add_argument("--sweep", action="store_true", help="Coarse param grid instead of a single run.")
+    parser.add_argument("--debug", action="store_true", help="Print full tracebacks on download failure.")
     args = parser.parse_args()
     args.symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     args.timeframes = [t.strip() for t in args.timeframes.split(",") if t.strip()]
 
     console = Console()
-    if args.sweep:
-        _sweep(args, console)
-        return
-
-    rows: list[dict] = []
-    for symbol in args.symbols:
-        for timeframe in args.timeframes:
-            console.print(f"[dim]running {symbol} {timeframe}…[/]")
-            stats = _run_one(args, console, symbol, timeframe)
-            if stats:
-                rows.append(stats)
-    if rows:
-        _scorecard(rows, console)
-    else:
-        console.print("[red]No results — check network access to Binance.[/]")
+    rc = asyncio.run(run_backtest_from_args(args, console))
+    sys.exit(rc)
 
 
 if __name__ == "__main__":

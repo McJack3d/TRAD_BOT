@@ -5,9 +5,21 @@ ccxt, paginating through the API limits, and caches each pull to a
 Parquet file under `data/history/` so repeated backtests don't re-hit
 the network.
 
-Used by `scripts/backtest_regime_switch.py`. The functions are sync
-wrappers around async ccxt calls so the CLI stays simple; the heavy
-lifting paginates politely with `enableRateLimit`.
+Two parallel APIs:
+
+  * `load_ohlcv_async` / `load_funding_async` — the canonical async
+    functions. Use these from anywhere already in an asyncio context
+    (e.g. the tradbot CLI handlers).
+  * `load_ohlcv` / `load_funding` — thin sync wrappers that do a single
+    `asyncio.run(...)` for standalone scripts that aren't already in a
+    loop.
+
+Calling the sync wrappers from inside a running event loop is a
+programming error (Python forbids nested `asyncio.run`). They raise a
+clear `RuntimeError` pointing at the async variant rather than the
+opaque "cannot be called from a running event loop" the runtime
+produces, which was the bug behind the misleading "geo-blocked"
+message in the backtest CLI on first deploy.
 """
 
 from __future__ import annotations
@@ -41,7 +53,10 @@ def _cache_path(cache_dir: str, symbol: str, timeframe: str, kind: str) -> Path:
     return Path(cache_dir) / f"{kind}_{safe}_{timeframe}.parquet"
 
 
-async def _download_ohlcv_async(
+# ---- downloaders -------------------------------------------------------
+
+
+async def _download_ohlcv(
     symbol: str, timeframe: str, since_ms: int, until_ms: int
 ) -> list[list[float]]:
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
@@ -68,7 +83,7 @@ async def _download_ohlcv_async(
     return [r for r in out if r[0] < until_ms]
 
 
-async def _download_funding_async(
+async def _download_funding(
     symbol: str, since_ms: int, until_ms: int
 ) -> list[tuple[int, float]]:
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
@@ -117,7 +132,16 @@ def _ohlcv_to_df(rows: list[list[float]]) -> pd.DataFrame:
     return df[["open", "high", "low", "close", "volume"]]
 
 
-def load_ohlcv(
+# ---- async public API (canonical) --------------------------------------
+
+
+# Override hooks for tests — replace these to feed canned data and avoid
+# any network. Production code should leave them alone.
+_OHLCV_FETCHER = _download_ohlcv
+_FUNDING_FETCHER = _download_funding
+
+
+async def load_ohlcv_async(
     symbol: str,
     timeframe: str = "1h",
     months: int = 6,
@@ -135,14 +159,14 @@ def load_ohlcv(
 
     until_ms = int(time.time() * 1000)
     since_ms = until_ms - months * 30 * 86_400_000
-    rows = asyncio.run(_download_ohlcv_async(symbol, timeframe, since_ms, until_ms))
+    rows = await _OHLCV_FETCHER(symbol, timeframe, since_ms, until_ms)
     df = _ohlcv_to_df(rows)
     if not df.empty:
         df.to_parquet(path)
     return df
 
 
-def load_funding(
+async def load_funding_async(
     symbol: str,
     months: int = 6,
     cache_dir: str = "data/history",
@@ -158,10 +182,59 @@ def load_funding(
 
     until_ms = int(time.time() * 1000)
     since_ms = until_ms - months * 30 * 86_400_000
-    rows = asyncio.run(_download_funding_async(symbol, since_ms, until_ms))
+    rows = await _FUNDING_FETCHER(symbol, since_ms, until_ms)
     if not rows:
         return pd.Series(dtype=float)
     idx = pd.to_datetime([ts for ts, _ in rows], unit="ms", utc=True)
     s = pd.Series([r for _, r in rows], index=idx, name="funding_rate").sort_index()
     pd.DataFrame({"funding_rate": s}).to_parquet(path)
     return s
+
+
+# ---- sync wrappers (for standalone scripts) ----------------------------
+
+
+def _running_loop_or_none():
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _ensure_no_running_loop(funcname: str) -> None:
+    """Raise a clear error if a sync wrapper is invoked from inside an
+    event loop. Python's own error message ('asyncio.run() cannot be
+    called from a running event loop') buries the cause."""
+    if _running_loop_or_none() is not None:
+        raise RuntimeError(
+            f"{funcname}() is the sync wrapper; it can't be called from "
+            f"inside an asyncio event loop. Use `await {funcname}_async(...)` "
+            f"instead."
+        )
+
+
+def load_ohlcv(
+    symbol: str,
+    timeframe: str = "1h",
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.DataFrame:
+    """Sync wrapper around `load_ohlcv_async`. For standalone scripts
+    only — inside an event loop, use `load_ohlcv_async`."""
+    _ensure_no_running_loop("load_ohlcv")
+    return asyncio.run(
+        load_ohlcv_async(symbol, timeframe, months, cache_dir, refresh)
+    )
+
+
+def load_funding(
+    symbol: str,
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.Series:
+    """Sync wrapper around `load_funding_async`. For standalone scripts
+    only — inside an event loop, use `load_funding_async`."""
+    _ensure_no_running_loop("load_funding")
+    return asyncio.run(load_funding_async(symbol, months, cache_dir, refresh))

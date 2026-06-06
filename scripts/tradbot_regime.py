@@ -1,8 +1,11 @@
 """Regime-switch backtest commands for the `tradbot` CLI.
 
 Thin wrapper that lets you launch the backtest from the bot-picker menu
-in addition to `python -m scripts.backtest_regime_switch`. Same code
-runs underneath; this just feeds argparse defaults from menu choices.
+in addition to `python -m scripts.backtest_regime_switch`. Both paths
+share the same `run_backtest_from_args` async entry point so they
+behave identically — and so that a sync wrapper never accidentally
+calls `asyncio.run()` from inside a running event loop, which was the
+root cause of the misleading 'geo-blocked' error in the first build.
 """
 
 from __future__ import annotations
@@ -24,10 +27,12 @@ def _build_args(
     sweep: bool,
     no_funding: bool = False,
 ):
-    """Construct the Namespace the real CLI expects."""
+    """Construct the Namespace the real CLI's `run_backtest_from_args`
+    expects. Defaults mirror the spec's sizing/cost policy and must not
+    drift silently — there's a regression test for that."""
     import argparse
 
-    ns = argparse.Namespace(
+    return argparse.Namespace(
         symbols=[s.strip() for s in symbols.split(",") if s.strip()],
         timeframes=[t.strip() for t in timeframes.split(",") if t.strip()],
         months=months,
@@ -40,61 +45,39 @@ def _build_args(
         no_funding=no_funding,
         refresh=False,
         sweep=sweep,
+        debug=False,
     )
-    return ns
 
 
 async def cmd_regime_backtest(args, console: Console) -> int:
-    """Single backtest: BTC+ETH × 5m/15m/1h, 6 months, with funding."""
-    from scripts.backtest_regime_switch import _run_one, _scorecard
+    """Full backtest: BTC+ETH × 5m/15m/1h, 6 months, with funding."""
+    from scripts.backtest_regime_switch import run_backtest_from_args
 
     ns = _build_args(
         symbols="BTC/USDT,ETH/USDT", timeframes="5m,15m,1h", months=6, sweep=False
     )
-    rows: list[dict] = []
-    for symbol in ns.symbols:
-        for tf in ns.timeframes:
-            console.print(f"[dim]running {symbol} {tf}…[/]")
-            stats = _run_one(ns, console, symbol, tf)
-            if stats:
-                rows.append(stats)
-    if rows:
-        _scorecard(rows, console)
-    else:
-        console.print(
-            "[red]No results.[/] Most likely cause: the host can't reach "
-            "Binance. Run this on the Lightsail box (Tokyo region), not on "
-            "a geo-blocked network."
-        )
-    return 0 if rows else 1
+    return await run_backtest_from_args(ns, console)
 
 
 async def cmd_regime_sweep(args, console: Console) -> int:
     """Coarse parameter sweep — ADX threshold × ATR-stop multiple."""
-    from scripts.backtest_regime_switch import _sweep
+    from scripts.backtest_regime_switch import run_backtest_from_args
 
     ns = _build_args(
         symbols="BTC/USDT,ETH/USDT", timeframes="1h", months=6, sweep=True
     )
-    _sweep(ns, console)
-    return 0
+    return await run_backtest_from_args(ns, console)
 
 
 async def cmd_regime_quick(args, console: Console) -> int:
     """Quick smoke test: BTC 1h, 2 months, no funding model."""
-    from scripts.backtest_regime_switch import _run_one, _scorecard
+    from scripts.backtest_regime_switch import run_backtest_from_args
 
     ns = _build_args(
         symbols="BTC/USDT", timeframes="1h", months=2, sweep=False, no_funding=True
     )
     console.print("[dim]running quick BTC 1h backtest (2 months, no funding)…[/]")
-    rows: list[dict] = []
-    stats = _run_one(ns, console, "BTC/USDT", "1h")
-    if stats:
-        rows.append(stats)
-        _scorecard(rows, console)
-        return 0
-    return 1
+    return await run_backtest_from_args(ns, console)
 
 
 def register_subparsers(sub) -> None:
