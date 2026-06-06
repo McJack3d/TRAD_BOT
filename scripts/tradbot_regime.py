@@ -47,6 +47,16 @@ def _build_args(
         sweep=sweep,
         diagnose=False,
         debug=False,
+        # Parameter overrides — None means "use the spec default."
+        no_trend_leg=False,
+        no_range_leg=False,
+        adx_trend_min=None,
+        adx_range_max=None,
+        rv_high_pctile=None,
+        rv_low_pctile=None,
+        atr_mult=None,
+        rsi_os=None,
+        rsi_ob=None,
     )
 
 

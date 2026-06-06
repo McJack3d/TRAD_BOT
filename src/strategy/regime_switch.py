@@ -67,6 +67,9 @@ class RegimeSwitchParams:
     # Sizing / stop.
     atr_window: int = 14
     atr_mult: float = 2.0
+    # Kill switches for ablation experiments.
+    disable_trend_leg: bool = False
+    disable_range_leg: bool = False
 
     def regime_params(self) -> RegimeParams:
         return RegimeParams(
@@ -211,6 +214,8 @@ def evaluate_at(
 
     # ---- flat: look for an entry -------------------------------------
     if regime == Regime.TREND:
+        if p.disable_trend_leg:
+            return SwitchSignal(Action.HOLD, None, "trend leg disabled (ablation)")
         up = pre.ema_fast[i] > pre.ema_slow[i] and close > pre.ema_slow[i]
         down = pre.ema_fast[i] < pre.ema_slow[i] and close < pre.ema_slow[i]
         if up:
@@ -228,6 +233,8 @@ def evaluate_at(
         return SwitchSignal(Action.HOLD, None, "trend regime but EMAs not aligned")
 
     if regime == Regime.RANGE:
+        if p.disable_range_leg:
+            return SwitchSignal(Action.HOLD, None, "range leg disabled (ablation)")
         if close < pre.bb_lower[i] and pre.rsi[i] < p.rsi_os:
             return SwitchSignal(
                 Action.ENTER_LONG, EntryLeg.RANGE,

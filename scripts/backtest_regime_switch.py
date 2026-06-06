@@ -43,6 +43,33 @@ GATE_MAX_DD = -0.35
 GATE_MIN_TRADES = 100
 
 
+def _params_from_args(args, **overrides) -> RegimeSwitchParams:
+    """Build RegimeSwitchParams from CLI overrides.
+
+    Defaults are the spec values; any not-None CLI flag overrides them.
+    `overrides` lets the sweep grid inject its per-cell adx_trend_min /
+    atr_mult on top of the CLI baseline.
+    """
+    base = {
+        "adx_trend_min": getattr(args, "adx_trend_min", None),
+        "adx_range_max": getattr(args, "adx_range_max", None),
+        "rv_high_pctile": getattr(args, "rv_high_pctile", None),
+        "rv_low_pctile": getattr(args, "rv_low_pctile", None),
+        "atr_mult": getattr(args, "atr_mult", None),
+        "rsi_os": getattr(args, "rsi_os", None),
+        "rsi_ob": getattr(args, "rsi_ob", None),
+        "disable_trend_leg": getattr(args, "no_trend_leg", False),
+        "disable_range_leg": getattr(args, "no_range_leg", False),
+    }
+    kwargs = {k: v for k, v in base.items() if v is not None and v is not False}
+    # `disable_*` False is the default — keep it only when True.
+    for flag in ("disable_trend_leg", "disable_range_leg"):
+        if base[flag]:
+            kwargs[flag] = True
+    kwargs.update(overrides)
+    return RegimeSwitchParams(**kwargs)
+
+
 async def _load_async(
     symbol: str, timeframe: str, months: int, refresh: bool, use_funding: bool
 ):
@@ -106,7 +133,7 @@ async def _run_one(
         return None
     res = backtest_regime_switch(
         df,
-        params=RegimeSwitchParams(),
+        params=_params_from_args(args),
         initial_equity=args.equity,
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
@@ -217,7 +244,7 @@ async def run_diagnose_from_args(args, console: Console) -> int:
                 console.print(f"[yellow]⚠[/] {symbol} {timeframe}: only {len(df)} bars — skipping")
                 continue
             any_ok = True
-            d = diagnose_regime(df, RegimeSwitchParams())
+            d = diagnose_regime(df, _params_from_args(args))
             _print_diagnosis(d, console, symbol, timeframe)
     return 0 if any_ok else 1
 
@@ -247,7 +274,9 @@ async def _sweep(args, console: Console) -> None:
                 for atr_mult in grid_atr:
                     res = backtest_regime_switch(
                         df,
-                        params=RegimeSwitchParams(adx_trend_min=adx_min, atr_mult=atr_mult),
+                        params=_params_from_args(
+                            args, adx_trend_min=adx_min, atr_mult=atr_mult
+                        ),
                         initial_equity=args.equity,
                         fee_bps=args.fee_bps,
                         slippage_bps=args.slippage_bps,
@@ -311,6 +340,16 @@ def main() -> None:
     parser.add_argument("--sweep", action="store_true", help="Coarse param grid instead of a single run.")
     parser.add_argument("--diagnose", action="store_true", help="Print regime fire-rate diagnostics (why so few trades).")
     parser.add_argument("--debug", action="store_true", help="Print full tracebacks on download failure.")
+    # Ablation / parameter overrides (None == use spec default).
+    parser.add_argument("--no-trend-leg", action="store_true", help="Disable the trend leg (test range-leg in isolation).")
+    parser.add_argument("--no-range-leg", action="store_true", help="Disable the range leg (test trend-leg in isolation).")
+    parser.add_argument("--adx-trend-min", type=float, default=None, help="Override the ADX threshold for TREND regime (default 25).")
+    parser.add_argument("--adx-range-max", type=float, default=None, help="Override the ADX ceiling for RANGE regime (default 20).")
+    parser.add_argument("--rv-high-pctile", type=float, default=None, help="Override the rv high percentile for TREND (default 0.60).")
+    parser.add_argument("--rv-low-pctile", type=float, default=None, help="Override the rv low percentile for RANGE (default 0.40).")
+    parser.add_argument("--atr-mult", type=float, default=None, help="Override the ATR multiple for the stop distance (default 2.0).")
+    parser.add_argument("--rsi-os", type=float, default=None, help="Override the RSI oversold threshold (default 30).")
+    parser.add_argument("--rsi-ob", type=float, default=None, help="Override the RSI overbought threshold (default 70).")
     args = parser.parse_args()
     args.symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
     args.timeframes = [t.strip() for t in args.timeframes.split(",") if t.strip()]
