@@ -812,6 +812,7 @@ async def cmd_menu(args, console: Console) -> int:
             "  [bold]1[/]  Binance trend bot (BTC SMA — daily eval, spot only)\n"
             "  [bold]2[/]  IBKR sentiment bot (FinBERT → LLM funnel, US equities)\n"
             "  [bold]3[/]  Funding-arb daemon (read-only monitor + loss-stops)\n"
+            "  [bold]4[/]  Regime-switch perp bot (backtests — pre-deployment)\n"
             "  [bold]0[/]  Quit"
         )
         binance_mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
@@ -825,7 +826,7 @@ async def cmd_menu(args, console: Console) -> int:
         title = f"TradBot · Binance {binance_mode} · IBKR {ibsent_mode}"
         console.print(Panel(body, title=title, expand=False))
         try:
-            choice = console.input("[bold]Choose bot[/] (0-3): ").strip().lower()
+            choice = console.input("[bold]Choose bot[/] (0-4): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return 0
@@ -847,7 +848,12 @@ async def cmd_menu(args, console: Console) -> int:
             if rc == -1:
                 return 0
             continue
-        console.print("[yellow]Unknown choice — pick 0-3.[/]")
+        if choice == "4":
+            rc = await _regime_menu(console)
+            if rc == -1:
+                return 0
+            continue
+        console.print("[yellow]Unknown choice — pick 0-4.[/]")
 
 
 async def _binance_menu(console: Console) -> int:
@@ -913,6 +919,52 @@ async def _farb_menu(console: Console) -> int:
         body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
         console.print(
             Panel(body, title="Funding-arb daemon · read-only monitor", expand=False)
+        )
+        try:
+            choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return -1
+        if choice in ("b", "back"):
+            return 0
+        entry = handlers.get(choice)
+        if entry is None:
+            console.print("[yellow]Unknown choice — pick 0-3 or 'b'.[/]")
+            continue
+        label, fn, ns = entry
+        console.rule(f"[dim]{label}[/]")
+        try:
+            await fn(ns, console)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+        try:
+            console.input("\n[dim]Press Enter to return to the menu...[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+
+
+async def _regime_menu(console: Console) -> int:
+    """Submenu for the regime-switch perp bot (backtests only — not
+    deployable until gates pass). Returns -1 to quit, 0 to go back."""
+    from scripts.tradbot_regime import menu_items
+
+    items = menu_items()
+    handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
+
+    while True:
+        console.print()
+        body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
+        body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
+        console.print(
+            Panel(
+                body,
+                title="Regime-switch perp bot · backtests (pre-deployment)",
+                expand=False,
+            )
         )
         try:
             choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
@@ -1056,6 +1108,11 @@ def main() -> None:
     from scripts.tradbot_farb import register_subparsers as _register_farb
     _register_farb(sub)
 
+    # Regime-switch backtest subcommands (regime-*).
+    from scripts.tradbot_regime import HANDLERS as REGIME_HANDLERS
+    from scripts.tradbot_regime import register_subparsers as _register_regime
+    _register_regime(sub)
+
     args = parser.parse_args()
     console = Console()
     handler = {
@@ -1080,6 +1137,7 @@ def main() -> None:
         "install-app": cmd_install_app,
         **IBSENT_HANDLERS,
         **FARB_HANDLERS,
+        **REGIME_HANDLERS,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

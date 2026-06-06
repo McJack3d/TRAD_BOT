@@ -49,6 +49,8 @@ secrets/
 
 # Data and logs
 data/
+!/src/data/
+!/src/data/**
 logs/
 *.log
 *.db

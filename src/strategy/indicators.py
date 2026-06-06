@@ -82,3 +82,93 @@ def macd(
     sig = line.ewm(span=signal_window, adjust=False).mean()
     hist = line - sig
     return MACD(line=line, signal=sig, histogram=hist)
+
+
+# ---- ATR / ADX / volatility (for the regime-switching strategy) --------
+
+
+def _wilder(series: pd.Series, window: int) -> pd.Series:
+    """Wilder's smoothing == EMA with alpha = 1/window (adjust=False).
+
+    Same convention the RSI above uses, so ATR/ADX agree with the
+    classic TA definitions.
+    """
+    return series.ewm(alpha=1.0 / window, adjust=False, min_periods=window).mean()
+
+
+def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
+    """Wilder's True Range: max of (H-L, |H-Cprev|, |L-Cprev|)."""
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [
+            (high - low),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    return tr
+
+
+def atr(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> pd.Series:
+    """Average True Range (Wilder). Returns price-unit volatility, the
+    basis for ATR position sizing and stops."""
+    return _wilder(true_range(high, low, close), window)
+
+
+@dataclass(slots=True)
+class ADX:
+    adx: pd.Series
+    plus_di: pd.Series
+    minus_di: pd.Series
+
+
+def adx(
+    high: pd.Series, low: pd.Series, close: pd.Series, window: int = 14
+) -> ADX:
+    """Wilder's Average Directional Index — trend *strength* (not
+    direction), 0-100. High ADX = strong trend; low = ranging.
+
+    Returns ADX plus the +DI / -DI components (direction).
+    """
+    up_move = high.diff()
+    down_move = -low.diff()
+    plus_dm = ((up_move > down_move) & (up_move > 0)) * up_move.clip(lower=0)
+    minus_dm = ((down_move > up_move) & (down_move > 0)) * down_move.clip(lower=0)
+
+    tr = true_range(high, low, close)
+    atr_ = _wilder(tr, window)
+    # Guard against divide-by-zero on flat sections.
+    safe_atr = atr_.replace(0.0, np.nan)
+    plus_di = 100.0 * _wilder(plus_dm, window) / safe_atr
+    minus_di = 100.0 * _wilder(minus_dm, window) / safe_atr
+
+    di_sum = (plus_di + minus_di).replace(0.0, np.nan)
+    dx = 100.0 * (plus_di - minus_di).abs() / di_sum
+    adx_series = _wilder(dx, window)
+    return ADX(
+        adx=adx_series,
+        plus_di=plus_di.fillna(0.0),
+        minus_di=minus_di.fillna(0.0),
+    )
+
+
+def realized_vol(closes: pd.Series, window: int = 20) -> pd.Series:
+    """Rolling standard deviation of log returns — a clean volatility
+    proxy. Not annualized; we only compare it to its own history via
+    `rolling_rank_pct`."""
+    log_ret = np.log(closes / closes.shift(1))
+    return log_ret.rolling(window).std(ddof=0)
+
+
+def rolling_rank_pct(series: pd.Series, lookback: int) -> pd.Series:
+    """Percentile rank in [0, 1] of each value within its trailing
+    `lookback` window (1.0 = current value is the highest in the window).
+
+    Used to ask "is realized vol high *relative to recent history*?"
+    without hard-coding an absolute volatility threshold that would only
+    fit one asset/era.
+    """
+    return series.rolling(lookback).rank(pct=True)
