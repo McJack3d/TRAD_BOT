@@ -45,6 +45,7 @@ def _build_args(
         no_funding=no_funding,
         refresh=False,
         sweep=sweep,
+        diagnose=False,
         debug=False,
     )
 
@@ -80,16 +81,29 @@ async def cmd_regime_quick(args, console: Console) -> int:
     return await run_backtest_from_args(ns, console)
 
 
+async def cmd_regime_diagnose(args, console: Console) -> int:
+    """Diagnose WHY the strategy trades so rarely — regime occupancy +
+    per-leg entry-condition breakdown across BTC+ETH × 5m/15m/1h."""
+    from scripts.backtest_regime_switch import run_diagnose_from_args
+
+    ns = _build_args(
+        symbols="BTC/USDT,ETH/USDT", timeframes="5m,15m,1h", months=6, sweep=False
+    )
+    return await run_diagnose_from_args(ns, console)
+
+
 def register_subparsers(sub) -> None:
     sub.add_parser("regime-backtest", help="Regime-switch · full backtest (BTC+ETH × 5m/15m/1h, 6mo).")
     sub.add_parser("regime-sweep", help="Regime-switch · parameter sweep (ADX × ATR).")
     sub.add_parser("regime-quick", help="Regime-switch · quick smoke test (BTC 1h, 2mo).")
+    sub.add_parser("regime-diagnose", help="Regime-switch · why-so-few-trades fire-rate diagnostic.")
 
 
 HANDLERS = {
     "regime-backtest": cmd_regime_backtest,
     "regime-sweep": cmd_regime_sweep,
     "regime-quick": cmd_regime_quick,
+    "regime-diagnose": cmd_regime_diagnose,
 }
 
 
@@ -100,5 +114,6 @@ def menu_items():
     return [
         ("1", "Quick smoke test (BTC 1h, 2 months)", cmd_regime_quick, ns),
         ("2", "Full backtest (BTC+ETH × 5m/15m/1h, 6 months)", cmd_regime_backtest, ns),
-        ("3", "Parameter sweep (ADX × ATR-stop)", cmd_regime_sweep, ns),
+        ("3", "Diagnose fire rate (why so few trades)", cmd_regime_diagnose, ns),
+        ("4", "Parameter sweep (ADX × ATR-stop)", cmd_regime_sweep, ns),
     ]

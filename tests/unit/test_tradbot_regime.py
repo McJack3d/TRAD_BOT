@@ -25,7 +25,7 @@ def test_subparsers_match_handlers():
 
 def test_menu_items_well_formed():
     items = tradbot_regime.menu_items()
-    assert len(items) == 3
+    assert len(items) == 4  # quick, full, diagnose, sweep
     keys = [k for k, _, _, _ in items]
     assert len(keys) == len(set(keys))
     for key, label, fn, ns in items:

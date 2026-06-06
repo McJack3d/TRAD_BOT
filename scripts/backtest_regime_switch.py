@@ -155,6 +155,73 @@ def _scorecard(rows: list[dict], console: Console) -> None:
     )
 
 
+def _print_diagnosis(d: dict, console: Console, symbol: str, timeframe: str) -> None:
+    from src.backtest.regime_diagnostics import bottleneck_verdict
+
+    reg = d["regime"]
+    occ = Table(title=f"Regime occupancy — {symbol} {timeframe}", expand=False)
+    for col in ("regime", "bars", "% of warmed"):
+        occ.add_column(col, justify="left" if col == "regime" else "right")
+    occ.add_row("TREND", str(reg["trend"]), f"{reg['trend_pct']:.1%}")
+    occ.add_row("RANGE", str(reg["range"]), f"{reg['range_pct']:.1%}")
+    occ.add_row("NEUTRAL (stand aside)", str(reg["neutral"]), f"{reg['neutral_pct']:.1%}")
+    occ.add_row("[dim]warmup (excluded)[/]", f"[dim]{d['warmup_bars']}[/]", "")
+    console.print(occ)
+
+    t = d["trend_leg"]
+    tl = Table(title="Trend leg — of TREND bars", expand=False)
+    for col in ("condition", "bars"):
+        tl.add_column(col, justify="left" if col == "condition" else "right")
+    tl.add_row("EMA long-aligned (would enter long)", str(t["ema_long_aligned"]))
+    tl.add_row("EMA short-aligned (would enter short)", str(t["ema_short_aligned"]))
+    tl.add_row("EMA unaligned (hold)", str(t["ema_unaligned"]))
+    tl.add_row("[bold]→ would-enter rate[/]", f"[bold]{t['enter_rate']:.1%}[/]")
+    console.print(tl)
+
+    r = d["range_leg"]
+    rl = Table(title="Range leg — of RANGE bars", expand=False)
+    for col in ("condition", "bars"):
+        rl.add_column(col, justify="left" if col == "condition" else "right")
+    rl.add_row("lower-band touch + oversold (enter long)", str(r["lower_touch_and_oversold"]))
+    rl.add_row("lower-band touch, RSI not oversold", str(r["lower_touch_not_oversold"]))
+    rl.add_row("upper-band touch + overbought (enter short)", str(r["upper_touch_and_overbought"]))
+    rl.add_row("upper-band touch, RSI not overbought", str(r["upper_touch_not_overbought"]))
+    rl.add_row("no band touch", str(r["no_band_touch"]))
+    rl.add_row("[bold]→ would-enter rate[/]", f"[bold]{r['enter_rate']:.1%}[/]")
+    console.print(rl)
+
+    console.print(
+        f"[dim]Realized entries (full state-machine walk): "
+        f"{d['realized_entries']}[/]"
+    )
+    console.print(f"[yellow]Bottleneck:[/] {bottleneck_verdict(d)}\n")
+
+
+async def run_diagnose_from_args(args, console: Console) -> int:
+    """Print regime fire-rate diagnostics per symbol/timeframe."""
+    from src.backtest.regime_diagnostics import diagnose_regime
+
+    any_ok = False
+    for symbol in args.symbols:
+        for timeframe in args.timeframes:
+            try:
+                df, _ = await _load_async(
+                    symbol, timeframe, args.months, args.refresh, use_funding=False
+                )
+            except Exception as e:  # noqa: BLE001
+                console.print(f"[red]✗[/] {symbol} {timeframe}: {_explain_download_failure(e)}")
+                if args.debug:
+                    console.print(f"[dim]{traceback.format_exc()}[/]")
+                continue
+            if df.empty or len(df) < 300:
+                console.print(f"[yellow]⚠[/] {symbol} {timeframe}: only {len(df)} bars — skipping")
+                continue
+            any_ok = True
+            d = diagnose_regime(df, RegimeSwitchParams())
+            _print_diagnosis(d, console, symbol, timeframe)
+    return 0 if any_ok else 1
+
+
 async def _sweep(args, console: Console) -> None:
     grid_adx = [20.0, 25.0, 30.0]
     grid_atr = [1.5, 2.0, 3.0]
@@ -206,6 +273,8 @@ async def _sweep(args, console: Console) -> None:
 
 async def run_backtest_from_args(args, console: Console) -> int:
     """Async entry point — invoked by both the CLI and the tradbot menu."""
+    if getattr(args, "diagnose", False):
+        return await run_diagnose_from_args(args, console)
     if args.sweep:
         await _sweep(args, console)
         return 0
@@ -240,6 +309,7 @@ def main() -> None:
     parser.add_argument("--no-funding", action="store_true", help="Skip the funding cost model.")
     parser.add_argument("--refresh", action="store_true", help="Force re-download (ignore cache).")
     parser.add_argument("--sweep", action="store_true", help="Coarse param grid instead of a single run.")
+    parser.add_argument("--diagnose", action="store_true", help="Print regime fire-rate diagnostics (why so few trades).")
     parser.add_argument("--debug", action="store_true", help="Print full tracebacks on download failure.")
     args = parser.parse_args()
     args.symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
