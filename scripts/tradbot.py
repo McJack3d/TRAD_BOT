@@ -81,8 +81,10 @@ EXIT_BUFFER = float(os.environ.get("SIMPLE_BOT_EXIT_BUFFER", "0.01"))
 TRAILING_STOP = float(os.environ.get("SIMPLE_BOT_TRAILING_STOP", "0"))
 SYMBOL = os.environ.get("SIMPLE_BOT_SYMBOL", "BTC/USDT")
 # Sentiment: weight 0 = off (default). Set SIMPLE_BOT_SENTIMENT_WEIGHT
-# to e.g. 0.03 to let the Fear & Greed factor shift the SMA thresholds.
+# to e.g. 0.03 to let the sentiment factor shift the SMA thresholds.
 SENTIMENT_WEIGHT = float(os.environ.get("SIMPLE_BOT_SENTIMENT_WEIGHT", "0"))
+# Which source feeds that factor: fear_greed (default) | ai | combo.
+SENTIMENT_SOURCE = os.environ.get("SIMPLE_BOT_SENTIMENT_SOURCE", "fear_greed")
 
 
 # ---- bot construction -----------------------------------------------
@@ -131,9 +133,9 @@ async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ig
 
     sentiment_source = None
     if SENTIMENT_WEIGHT > 0:
-        from src.sentiment.fear_greed import FearGreedSentiment
+        from src.sentiment.ai_sentiment import build_sentiment_source
 
-        sentiment_source = FearGreedSentiment()
+        sentiment_source = build_sentiment_source(SENTIMENT_SOURCE)
 
     bot = SimpleBot(
         exchange=ex,
@@ -562,6 +564,49 @@ async def cmd_sentiment(args, console: Console) -> int:
     return 0
 
 
+async def cmd_ai_sentiment(args, console: Console) -> int:
+    """Show the current AI crypto-news sentiment reading. Read-only.
+
+    Pulls recent headlines from public crypto RSS feeds and scores them
+    with FinBERT (the deterministic keyword stub unless the `sentiment`
+    extra is installed). No API key required."""
+    from src.sentiment.ai_sentiment import build_ai_sentiment
+
+    with console.status("Fetching crypto headlines and scoring sentiment..."):
+        try:
+            reading = await build_ai_sentiment("stub").current()
+        except Exception as e:
+            console.print(f"[red]✗[/] Couldn't compute AI sentiment: {e}")
+            return 1
+    factor = reading.value
+    colour = "green" if factor > 0.15 else "red" if factor < -0.15 else "yellow"
+    table = Table(show_header=False, expand=False, border_style="dim")
+    table.add_column(style="dim")
+    table.add_column(style="bold")
+    table.add_row("Source", "AI crypto-news (RSS → FinBERT)")
+    table.add_row("Reading", f"[{colour}]{reading.label}[/]")
+    table.add_row("Sentiment factor", f"[{colour}]{factor:+.2f}[/]  (range -1..+1)")
+    table.add_row("As of", reading.ts.isoformat())
+    if SENTIMENT_WEIGHT > 0 and SENTIMENT_SOURCE in ("ai", "combo"):
+        shift = factor * SENTIMENT_WEIGHT
+        table.add_row(
+            "Effect on entry buffer",
+            f"{-shift:+.3f}  (weight {SENTIMENT_WEIGHT:.0%}, source {SENTIMENT_SOURCE})",
+        )
+    else:
+        table.add_row(
+            "Effect",
+            "[dim]not wired — set SIMPLE_BOT_SENTIMENT_WEIGHT>0 and "
+            "SIMPLE_BOT_SENTIMENT_SOURCE=ai (or combo)[/]",
+        )
+    console.print(Panel(table, title="AI sentiment", expand=False))
+    console.print(
+        "[dim]Stub keyword scorer by default. Install the 'sentiment' extra "
+        "and use build_ai_sentiment('finbert') for the real model.[/]"
+    )
+    return 0
+
+
 async def cmd_config(args, console: Console) -> int:
     """Print the resolved config and where it comes from."""
     table = Table(title="trad-bot config", expand=False)
@@ -578,7 +623,9 @@ async def cmd_config(args, console: Console) -> int:
     stop_label = f"{TRAILING_STOP:.0%}" if TRAILING_STOP > 0 else "off"
     table.add_row("Trailing stop", stop_label, env_or_default("SIMPLE_BOT_TRAILING_STOP", "0"))
     sent_label = (
-        f"Fear&Greed, weight {SENTIMENT_WEIGHT:.0%}" if SENTIMENT_WEIGHT > 0 else "off"
+        f"{SENTIMENT_SOURCE}, weight {SENTIMENT_WEIGHT:.0%}"
+        if SENTIMENT_WEIGHT > 0
+        else "off"
     )
     table.add_row("Sentiment", sent_label, env_or_default("SIMPLE_BOT_SENTIMENT_WEIGHT", "0"))
     table.add_row("DB path", DB_PATH, env_or_default("SIMPLE_BOT_DB", "data/simple_bot.db"))
@@ -812,6 +859,7 @@ async def cmd_menu(args, console: Console) -> int:
             "  [bold]1[/]  Binance trend bot (BTC SMA — daily eval, spot only)\n"
             "  [bold]2[/]  IBKR sentiment bot (FinBERT → LLM funnel, US equities)\n"
             "  [bold]3[/]  Funding-arb daemon (read-only monitor + loss-stops)\n"
+            "  [bold]4[/]  Regime-switch perp bot (backtests — pre-deployment)\n"
             "  [bold]0[/]  Quit"
         )
         binance_mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
@@ -825,7 +873,7 @@ async def cmd_menu(args, console: Console) -> int:
         title = f"TradBot · Binance {binance_mode} · IBKR {ibsent_mode}"
         console.print(Panel(body, title=title, expand=False))
         try:
-            choice = console.input("[bold]Choose bot[/] (0-3): ").strip().lower()
+            choice = console.input("[bold]Choose bot[/] (0-4): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return 0
@@ -847,7 +895,12 @@ async def cmd_menu(args, console: Console) -> int:
             if rc == -1:
                 return 0
             continue
-        console.print("[yellow]Unknown choice — pick 0-3.[/]")
+        if choice == "4":
+            rc = await _regime_menu(console)
+            if rc == -1:
+                return 0
+            continue
+        console.print("[yellow]Unknown choice — pick 0-4.[/]")
 
 
 async def _binance_menu(console: Console) -> int:
@@ -863,6 +916,8 @@ async def _binance_menu(console: Console) -> int:
         ("7", "Equity history", cmd_equity, _menu_namespace()),
         ("8", "Flatten to cash", cmd_flatten, _menu_namespace(yes=False)),
         ("9", "Config", cmd_config, _menu_namespace()),
+        ("s", "Fear & Greed sentiment", cmd_sentiment, _menu_namespace()),
+        ("a", "AI news sentiment", cmd_ai_sentiment, _menu_namespace()),
     ]
     handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
 
@@ -873,7 +928,7 @@ async def _binance_menu(console: Console) -> int:
         mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
         console.print(Panel(body, title=f"Binance trend bot · {mode}", expand=False))
         try:
-            choice = console.input("[bold]Choose[/] (0-9, b): ").strip().lower()
+            choice = console.input("[bold]Choose[/] (0-9, s, a, b): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return -1
@@ -884,7 +939,7 @@ async def _binance_menu(console: Console) -> int:
             return 0
         entry = handlers.get(choice)
         if entry is None:
-            console.print("[yellow]Unknown choice — pick 0-9 or 'b'.[/]")
+            console.print("[yellow]Unknown choice — pick 0-9, s, a, or 'b'.[/]")
             continue
         label, fn, ns = entry
         console.rule(f"[dim]{label}[/]")
@@ -913,6 +968,52 @@ async def _farb_menu(console: Console) -> int:
         body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
         console.print(
             Panel(body, title="Funding-arb daemon · read-only monitor", expand=False)
+        )
+        try:
+            choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+        if choice in ("0", "q", "quit", "exit"):
+            console.print("[dim]Bye.[/]")
+            return -1
+        if choice in ("b", "back"):
+            return 0
+        entry = handlers.get(choice)
+        if entry is None:
+            console.print("[yellow]Unknown choice — pick 0-3 or 'b'.[/]")
+            continue
+        label, fn, ns = entry
+        console.rule(f"[dim]{label}[/]")
+        try:
+            await fn(ns, console)
+        except Exception as e:
+            console.print(f"[red]Error:[/] {e}")
+        try:
+            console.input("\n[dim]Press Enter to return to the menu...[/]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[dim]Bye.[/]")
+            return -1
+
+
+async def _regime_menu(console: Console) -> int:
+    """Submenu for the regime-switch perp bot (backtests only — not
+    deployable until gates pass). Returns -1 to quit, 0 to go back."""
+    from scripts.tradbot_regime import menu_items
+
+    items = menu_items()
+    handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
+
+    while True:
+        console.print()
+        body = "\n".join(f"  [bold]{k}[/]  {label}" for k, label, _, _ in items)
+        body += "\n  [bold]b[/]  Back to bot picker\n  [bold]0[/]  Quit"
+        console.print(
+            Panel(
+                body,
+                title="Regime-switch perp bot · backtests (pre-deployment)",
+                expand=False,
+            )
         )
         try:
             choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
@@ -1009,6 +1110,7 @@ def main() -> None:
     )
     sub.add_parser("signal", help="Show what the signal says NOW (read-only).")
     sub.add_parser("sentiment", help="Show the current Fear & Greed reading.")
+    sub.add_parser("ai-sentiment", help="Show the current AI crypto-news sentiment reading.")
     p_flat = sub.add_parser("flatten", help="Sell all base to quote currency.")
     p_flat.add_argument("--yes", action="store_true", help="Confirm the sale.")
     p_trd = sub.add_parser("trades", help="List recent orders.")
@@ -1056,6 +1158,11 @@ def main() -> None:
     from scripts.tradbot_farb import register_subparsers as _register_farb
     _register_farb(sub)
 
+    # Regime-switch backtest subcommands (regime-*).
+    from scripts.tradbot_regime import HANDLERS as REGIME_HANDLERS
+    from scripts.tradbot_regime import register_subparsers as _register_regime
+    _register_regime(sub)
+
     args = parser.parse_args()
     console = Console()
     handler = {
@@ -1065,6 +1172,7 @@ def main() -> None:
         "evaluate": cmd_evaluate,
         "signal": cmd_signal,
         "sentiment": cmd_sentiment,
+        "ai-sentiment": cmd_ai_sentiment,
         "flatten": cmd_flatten,
         "trades": cmd_trades,
         "equity": cmd_equity,
@@ -1080,6 +1188,7 @@ def main() -> None:
         "install-app": cmd_install_app,
         **IBSENT_HANDLERS,
         **FARB_HANDLERS,
+        **REGIME_HANDLERS,
     }[args.cmd]
 
     rc = asyncio.run(handler(args, console))

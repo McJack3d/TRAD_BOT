@@ -49,6 +49,10 @@ secrets/
 
 # Data and logs
 data/
+!/src/data/
+!/src/data/**
+# But never track compiled artifacts inside the package.
+/src/data/__pycache__/
 logs/
 *.log
 *.db
