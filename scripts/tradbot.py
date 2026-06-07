@@ -607,6 +607,72 @@ async def cmd_ai_sentiment(args, console: Console) -> int:
     return 0
 
 
+async def cmd_sentiment_ab(args, console: Console) -> int:
+    """A/B: does sentiment improve the SMA trend bot vs SMA-alone?
+
+    Replays real BTC daily history through the trend backtest at several
+    sentiment weights, using the Fear & Greed history (the only sentiment
+    source with a backtestable archive). The AI news source is NOT
+    historically replayable — it can only be validated forward."""
+    from scripts.backtest_trend import _fetch_daily
+    from src.backtest.sentiment_ab import compare_sentiment_weights, verdict
+    from src.sentiment.fear_greed import FearGreedSentiment
+
+    console.print(
+        f"[dim]Fetching {args.years}y {SYMBOL} daily closes + Fear & Greed history…[/]"
+    )
+    try:
+        closes = await _fetch_daily(SYMBOL, args.years)
+    except Exception as e:
+        console.print(f"[red]✗[/] Couldn't fetch price history: {e}")
+        return 1
+    try:
+        fng = await FearGreedSentiment().history()
+    except Exception as e:
+        console.print(f"[red]✗[/] Couldn't fetch Fear & Greed history: {e}")
+        return 1
+    if closes.empty or len(closes) < SMA_WINDOW + 30:
+        console.print(f"[yellow]⚠[/] Only {len(closes)} closes — need more history.")
+        return 1
+
+    rows = compare_sentiment_weights(
+        closes,
+        fng,
+        weights=(0.0, 0.01, 0.03, 0.05),
+        sma_window=SMA_WINDOW,
+        entry_buffer_pct=ENTRY_BUFFER,
+        exit_buffer_pct=EXIT_BUFFER,
+    )
+    table = Table(
+        title=f"Sentiment A/B — {SYMBOL}, {args.years}y, SMA-{SMA_WINDOW}", expand=False
+    )
+    for col in ("variant", "APR", "Sharpe", "max DD", "trades", "final $"):
+        table.add_column(col, justify="left" if col == "variant" else "right")
+    base_sharpe = next((r.sharpe for r in rows if r.weight == 0), 0.0)
+    for r in rows:
+        sharpe_cell = f"{r.sharpe:.2f}"
+        if r.weight != 0:
+            d = r.sharpe - base_sharpe
+            colour = "green" if d > 0.05 else "red" if d < -0.05 else "dim"
+            sharpe_cell = f"{r.sharpe:.2f} [{colour}]({d:+.2f})[/]"
+        table.add_row(
+            r.label,
+            f"{r.apr:.1%}",
+            sharpe_cell,
+            f"{r.max_drawdown:.1%}",
+            str(r.n_trades),
+            f"${r.final_equity:,.0f}",
+        )
+    console.print(table)
+    console.print(f"[yellow]Verdict:[/] {verdict(rows)}")
+    console.print(
+        "[dim]This validates Fear & Greed only. The AI news source has no "
+        "historical archive — validate it forward with `tradbot ai-sentiment` "
+        "logged daily, not from this backtest.[/]"
+    )
+    return 0
+
+
 async def cmd_config(args, console: Console) -> int:
     """Print the resolved config and where it comes from."""
     table = Table(title="trad-bot config", expand=False)
@@ -918,6 +984,7 @@ async def _binance_menu(console: Console) -> int:
         ("9", "Config", cmd_config, _menu_namespace()),
         ("s", "Fear & Greed sentiment", cmd_sentiment, _menu_namespace()),
         ("a", "AI news sentiment", cmd_ai_sentiment, _menu_namespace()),
+        ("v", "Validate sentiment (A/B vs SMA-alone)", cmd_sentiment_ab, _menu_namespace(years=5)),
     ]
     handlers = {key: (label, fn, ns) for key, label, fn, ns in items}
 
@@ -928,7 +995,7 @@ async def _binance_menu(console: Console) -> int:
         mode = "[red]LIVE[/]" if LIVE else "[green]PAPER[/]"
         console.print(Panel(body, title=f"Binance trend bot · {mode}", expand=False))
         try:
-            choice = console.input("[bold]Choose[/] (0-9, s, a, b): ").strip().lower()
+            choice = console.input("[bold]Choose[/] (0-9, s, a, v, b): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return -1
@@ -939,7 +1006,7 @@ async def _binance_menu(console: Console) -> int:
             return 0
         entry = handlers.get(choice)
         if entry is None:
-            console.print("[yellow]Unknown choice — pick 0-9, s, a, or 'b'.[/]")
+            console.print("[yellow]Unknown choice — pick 0-9, s, a, v, or 'b'.[/]")
             continue
         label, fn, ns = entry
         console.rule(f"[dim]{label}[/]")
@@ -1130,6 +1197,11 @@ def main() -> None:
     p_bt = sub.add_parser("backtest", help="Run a backtest with the current config.")
     p_bt.add_argument("--years", type=int, default=5)
     p_bt.add_argument("--equity", type=float, default=1000)
+    p_ab = sub.add_parser(
+        "sentiment-ab",
+        help="A/B test: does sentiment beat SMA-alone? (Fear & Greed, backtestable).",
+    )
+    p_ab.add_argument("--years", type=int, default=5)
     sub.add_parser("menu", help="Interactive menu (what the .app launches).")
     sub.add_parser("install-app", help="Build a double-clickable TradBot.app (macOS).")
 
@@ -1173,6 +1245,7 @@ def main() -> None:
         "signal": cmd_signal,
         "sentiment": cmd_sentiment,
         "ai-sentiment": cmd_ai_sentiment,
+        "sentiment-ab": cmd_sentiment_ab,
         "flatten": cmd_flatten,
         "trades": cmd_trades,
         "equity": cmd_equity,
