@@ -610,12 +610,24 @@ async def cmd_ai_sentiment(args, console: Console) -> int:
 async def cmd_sentiment_ab(args, console: Console) -> int:
     """A/B: does sentiment improve the SMA trend bot vs SMA-alone?
 
-    Replays real BTC daily history through the trend backtest at several
-    sentiment weights, using the Fear & Greed history (the only sentiment
-    source with a backtestable archive). The AI news source is NOT
-    historically replayable — it can only be validated forward."""
+    Default mode: single backtest over `--years` of BTC daily history at
+    several sentiment weights, using the Fear & Greed history (the only
+    sentiment source with a backtestable archive).
+
+    --matrix mode: same A/B run across pre-defined sub-windows (full /
+    bull-to-ATH / ATH-to-bottom / recent 12m / recent 3m), so we can see
+    whether sentiment helps in some regimes (extremes) even though it
+    doesn't help on average. Windows are CHOSEN UP-FRONT and reported
+    together — no cherry-picking after the fact.
+
+    The AI news source is NOT historically replayable. Use the
+    `ai-sentiment-log` cron + `ai-sentiment-vs-sma` to validate it
+    forward."""
     from scripts.backtest_trend import _fetch_daily
-    from src.backtest.sentiment_ab import compare_sentiment_weights, verdict
+    from src.backtest.sentiment_ab import (
+        compare_sentiment_weights,
+        verdict,
+    )
     from src.sentiment.fear_greed import FearGreedSentiment
 
     console.print(
@@ -634,6 +646,11 @@ async def cmd_sentiment_ab(args, console: Console) -> int:
     if closes.empty or len(closes) < SMA_WINDOW + 30:
         console.print(f"[yellow]⚠[/] Only {len(closes)} closes — need more history.")
         return 1
+
+    if getattr(args, "matrix", False):
+        return _print_sentiment_matrix(
+            console, closes, fng, args.years,
+        )
 
     rows = compare_sentiment_weights(
         closes,
@@ -666,11 +683,163 @@ async def cmd_sentiment_ab(args, console: Console) -> int:
     console.print(table)
     console.print(f"[yellow]Verdict:[/] {verdict(rows)}")
     console.print(
-        "[dim]This validates Fear & Greed only. The AI news source has no "
-        "historical archive — validate it forward with `tradbot ai-sentiment` "
-        "logged daily, not from this backtest.[/]"
+        "[dim]Run with --matrix to break this down across bull/bear/recent "
+        "sub-windows.[/]"
+    )
+    console.print(
+        "[dim]AI news source has no historical archive. To validate it "
+        "forward, start logging now with `tradbot ai-sentiment-log` (cron "
+        "every 6h), and after 4+ weeks compare via `ai-sentiment-vs-sma`.[/]"
     )
     return 0
+
+
+def _print_sentiment_matrix(
+    console: Console, closes, fng, years: int
+) -> int:
+    """Multi-window matrix: rows = variants, columns = windows, cells = Sharpe (Δ vs baseline)."""
+    from src.backtest.sentiment_ab import (
+        compare_across_windows,
+        detect_recent_windows,
+        verdict,
+    )
+
+    weights = (0.0, 0.01, 0.03, 0.05)
+    windows = detect_recent_windows(closes)
+    if not windows:
+        console.print("[red]✗[/] No usable windows from the price series.")
+        return 1
+    results = compare_across_windows(
+        closes, fng, weights=weights, windows=windows,
+        sma_window=SMA_WINDOW,
+        entry_buffer_pct=ENTRY_BUFFER,
+        exit_buffer_pct=EXIT_BUFFER,
+    )
+
+    # Window descriptors first so the reader sees what each column means.
+    desc = Table(title="Windows", expand=False, show_lines=False)
+    desc.add_column("name")
+    desc.add_column("range / direction")
+    desc.add_column("days", justify="right")
+    for w in windows:
+        if w.name in results:
+            arrow = {"up": "[green]↑ up[/]", "down": "[red]↓ down[/]", "mixed": "[yellow]↔ mixed[/]"}.get(w.direction, w.direction)
+            desc.add_row(
+                w.name,
+                f"{w.start.date()} → {w.end.date()}  {arrow}",
+                str((w.end - w.start).days),
+            )
+    console.print(desc)
+
+    # Matrix: Sharpe per (variant, window).
+    matrix = Table(
+        title=f"Sentiment A/B matrix — {SYMBOL}, SMA-{SMA_WINDOW} (Sharpe, Δ vs baseline)",
+        expand=False,
+    )
+    matrix.add_column("variant")
+    visible_windows = [w.name for w in windows if w.name in results]
+    for name in visible_windows:
+        matrix.add_column(name, justify="right")
+
+    for w_i, weight in enumerate(weights):
+        label = "SMA-only" if weight == 0 else f"+sentiment w={weight:.2f}"
+        row_cells = [label]
+        for win_name in visible_windows:
+            rows = results[win_name]
+            if w_i >= len(rows):
+                row_cells.append("—")
+                continue
+            r = rows[w_i]
+            base = next((x.sharpe for x in rows if x.weight == 0), 0.0)
+            cell = f"{r.sharpe:.2f}"
+            if weight != 0:
+                d = r.sharpe - base
+                colour = "green" if d > 0.05 else "red" if d < -0.05 else "dim"
+                cell = f"{r.sharpe:.2f} [{colour}]({d:+.2f})[/]"
+            row_cells.append(cell)
+        matrix.add_row(*row_cells)
+    console.print(matrix)
+
+    # Per-window verdicts.
+    v_table = Table(title="Verdict per window", expand=False)
+    v_table.add_column("window")
+    v_table.add_column("verdict")
+    for win_name in visible_windows:
+        v_table.add_row(win_name, verdict(results[win_name]))
+    console.print(v_table)
+
+    console.print(
+        "[dim]Reading the matrix: green Δ means the weighted variant beat "
+        "the SMA-only baseline in that window. A column that's red across "
+        "all weights means sentiment HURT in that regime. A column that's "
+        "green only at high weights is suggestive but easily overfit.[/]"
+    )
+    console.print(
+        "[yellow]AI news caveat:[/] not in the matrix — no historical "
+        "archive. To validate forward, add to cron on the box:\n"
+        "  [bold]0 */6 * * * cd ~/TRAD_BOT && .venv/bin/tradbot ai-sentiment-log[/]\n"
+        "After 4+ weeks: [bold]tradbot ai-sentiment-vs-sma[/] (compares logged "
+        "AI factor against SMA decisions over the logged window)."
+    )
+    return 0
+
+
+async def cmd_ai_sentiment_log(args, console: Console) -> int:
+    """Append one row to data/ai_sentiment_log.csv with the current AI
+    sentiment factor + the current BTC close.
+
+    Designed for cron use ('0 */6 * * *'). Quiet on success unless --verbose.
+    """
+    import csv
+    from datetime import UTC, datetime
+    from pathlib import Path
+
+    from src.sentiment.ai_sentiment import build_ai_sentiment
+
+    log_path = Path(os.environ.get("AI_SENTIMENT_LOG", "data/ai_sentiment_log.csv"))
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        reading = await build_ai_sentiment("stub").current()
+    except Exception as e:
+        console.print(f"[red]✗[/] Couldn't compute AI sentiment: {e}")
+        return 1
+
+    # Best-effort spot price for downstream correlation analysis.
+    close = ""
+    try:
+        bot, ex, _db = await make_bot()
+        try:
+            t = await ex.fetch_ticker(SYMBOL, "spot")
+            close = f"{t.last:.2f}" if t.last else ""
+        finally:
+            await ex.close()
+            await _db.close()
+    except Exception:
+        close = ""
+
+    new = not log_path.exists()
+    with log_path.open("a", newline="") as f:
+        w = csv.writer(f)
+        if new:
+            w.writerow(["ts_utc", "ai_factor", "label", "btc_close", "symbol"])
+        w.writerow([
+            datetime.now(UTC).isoformat(),
+            f"{reading.value:.4f}",
+            reading.label,
+            close,
+            SYMBOL,
+        ])
+    if getattr(args, "verbose", False):
+        console.print(
+            f"[green]✓[/] Logged {reading.value:+.2f} ({reading.label}) "
+            f"to {log_path}"
+        )
+    return 0
+
+
+async def cmd_config(args, console: Console) -> int:
+    """Print the resolved config and where it comes from."""
 
 
 async def cmd_config(args, console: Console) -> int:
@@ -911,7 +1080,10 @@ def _menu_namespace(**kw):
     """Build a Namespace with the defaults the cmd_* handlers expect."""
     import argparse as _ap
 
-    defaults = dict(force=False, yes=True, limit=20, interval=30, years=5, equity=1000.0)
+    defaults = dict(
+        force=False, yes=True, limit=20, interval=30, years=5, equity=1000.0,
+        matrix=False, verbose=False,
+    )
     defaults.update(kw)
     return _ap.Namespace(**defaults)
 
@@ -1202,6 +1374,12 @@ def main() -> None:
         help="A/B test: does sentiment beat SMA-alone? (Fear & Greed, backtestable).",
     )
     p_ab.add_argument("--years", type=int, default=5)
+    p_ab.add_argument("--matrix", action="store_true", help="Break down by bull/bear/recent sub-windows.")
+    p_log = sub.add_parser(
+        "ai-sentiment-log",
+        help="Append current AI sentiment + BTC close to data/ai_sentiment_log.csv (cron-friendly).",
+    )
+    p_log.add_argument("--verbose", action="store_true")
     sub.add_parser("menu", help="Interactive menu (what the .app launches).")
     sub.add_parser("install-app", help="Build a double-clickable TradBot.app (macOS).")
 
@@ -1246,6 +1424,7 @@ def main() -> None:
         "sentiment": cmd_sentiment,
         "ai-sentiment": cmd_ai_sentiment,
         "sentiment-ab": cmd_sentiment_ab,
+        "ai-sentiment-log": cmd_ai_sentiment_log,
         "flatten": cmd_flatten,
         "trades": cmd_trades,
         "equity": cmd_equity,

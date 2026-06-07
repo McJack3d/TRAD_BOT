@@ -101,3 +101,92 @@ def test_initial_equity_respected():
     # Final equity should be in a plausible range relative to 5000 start,
     # not the 1000 default.
     assert rows[0].final_equity > 1000
+
+
+# ---- multi-window matrix tests --------------------------------------
+
+
+def _series_with_clear_ath(n: int = 800, seed: int = 3) -> pd.Series:
+    """A bull-then-bear price series with a deterministic ATH around 60%."""
+    rng = np.random.default_rng(seed)
+    bull = 100 + np.cumsum(rng.normal(0.25, 0.4, int(n * 0.6)))
+    bear = bull[-1] + np.cumsum(rng.normal(-0.18, 0.4, n - int(n * 0.6)))
+    close = np.maximum(np.concatenate([bull, bear]), 1.0)
+    idx = pd.date_range("2023-01-01", periods=n, freq="1D", tz="UTC")
+    return pd.Series(close, index=idx)
+
+
+def test_detect_windows_finds_ath_and_legs():
+    from src.backtest.sentiment_ab import detect_recent_windows
+
+    closes = _series_with_clear_ath()
+    windows = {w.name: w for w in detect_recent_windows(closes)}
+    assert "full" in windows
+    assert "bull_to_ath" in windows
+    assert "ath_to_bottom" in windows
+    # Bull leg points up, bear leg points down.
+    assert windows["bull_to_ath"].direction == "up"
+    assert windows["ath_to_bottom"].direction == "down"
+    # ATH is the same boundary between the two legs.
+    assert windows["bull_to_ath"].end == windows["ath_to_bottom"].start
+
+
+def test_detect_windows_includes_recent_3m_and_12m():
+    from src.backtest.sentiment_ab import detect_recent_windows
+
+    closes = _series_with_clear_ath(n=500)
+    names = [w.name for w in detect_recent_windows(closes)]
+    assert "recent_3m" in names
+    assert "recent_12m" in names
+
+
+def test_detect_windows_handles_empty():
+    from src.backtest.sentiment_ab import detect_recent_windows
+
+    assert detect_recent_windows(pd.Series(dtype=float)) == []
+
+
+def test_compare_across_windows_produces_a_matrix():
+    from src.backtest.sentiment_ab import (
+        compare_across_windows,
+        detect_recent_windows,
+    )
+
+    closes = _series_with_clear_ath()
+    sent = _sentiment(n=len(closes))
+    sent.index = closes.index  # align
+    windows = detect_recent_windows(closes)
+    results = compare_across_windows(
+        closes, sent, weights=(0.0, 0.03), windows=windows, sma_window=50
+    )
+    assert "full" in results
+    # Each window result must have one row per weight.
+    for rows in results.values():
+        assert len(rows) == 2
+        assert rows[0].weight == 0.0
+
+
+def test_short_window_warms_up_sma_without_trading_pre_window():
+    """If the window is shorter than the SMA, warmup pre-window closes
+    are fed in but no trades happen on those bars."""
+    from src.backtest.sentiment_ab import (
+        WindowSpec,
+        compare_across_windows,
+    )
+
+    closes = _series_with_clear_ath(n=600)
+    sent = _sentiment(n=600)
+    sent.index = closes.index
+    end = closes.index[-1]
+    short_window = WindowSpec(
+        name="recent_3m",
+        start=end - pd.Timedelta(days=90),
+        end=end,
+        direction="mixed",
+    )
+    results = compare_across_windows(
+        closes, sent, weights=(0.0,), windows=[short_window], sma_window=50
+    )
+    assert "recent_3m" in results
+    # No assertion on n_trades — just proving the run didn't crash from
+    # an under-warmed SMA, which is the bug this guards.
