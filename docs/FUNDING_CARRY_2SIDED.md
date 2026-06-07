@@ -218,3 +218,76 @@ Steps 1–5 are the validation. Step 6 is gated on the numbers.
    shared collateral) but a liquidation touches all margin positions;
    isolated quarantines risk per pair but needs per-pair transfers.
    (Default: cross, with a conservative margin-level gate.)
+
+---
+
+## 9. Decisions log (sign-off agreed 2026-06-09)
+
+The proposed defaults were corrected by user review. Final agreed
+parameters (overriding §1 / §4 / §8 above where they differ):
+
+1. **Asymmetric thresholds.** The legs are not symmetric — the
+   negative leg pays borrow, carries short-spot recall risk, and the
+   regimes it activates in (negative funding) cluster with violent
+   de-risking and short squeezes. Asymmetric risk → asymmetric demand.
+   - Positive-side entry: `funding ≥ 0.0002` per 8h (unchanged).
+   - **Negative-side entry: `|funding| − borrow_8h ≥ 0.0003`** per 8h
+     (50% premium over positive side to compensate for the asymmetric
+     downside). Net-of-borrow, NOT gross.
+   - Both exits: `net_carry ≤ 0.00005` per 8h (hysteresis preserved).
+
+2. **`max_borrow_rate_apr` tightened, AND netted into entry.**
+   Original 25% was above the 0.02%/8h positive-side threshold
+   (25%/1095 ≈ 0.023%/8h), which would have allowed trades where
+   borrow cost alone exceeded the funding income. Two corrections:
+   - **`max_borrow_rate_apr = 15`** (default 25). At 15% APR borrow is
+     0.0137%/8h, safely below even the positive-side threshold.
+   - **Entry decision uses net carry (income − borrow), never gross.**
+     The strategy module's `enter_negative()` MUST take
+     `current_borrow_rate` as an argument and reject if the net is
+     below the threshold or if `current_borrow_rate ≥
+     max_borrow_rate_apr`.
+   - Continuous monitor closes any open negative-leg position if
+     `current_borrow_rate ≥ max_borrow_rate_apr`.
+
+3. **Universe per-leg.** Negative leg restricted to **BTC + ETH only**
+   (deep borrow, low recall risk, tight basis). Positive leg keeps the
+   existing config's symbol list. The strategy enforces this at the
+   `evaluate_signal` boundary, not via config alone (defense in depth).
+
+4. **Cross margin + account-level de-risk kill-switch.** Isolated
+   margin would let one leg liquidate while the other survives,
+   instantly converting a delta-neutral pair into a directional
+   position — the precise risk we're trying to avoid. Cross keeps both
+   legs alive on shared collateral. The cost is correlated cascade, so
+   the risk overlay adds:
+   - **`min_margin_level` continuous gate** — close ALL negative-leg
+     positions when the cross-margin account's margin level drops
+     below the configured floor (default 2.0; Binance liquidates
+     around 1.1). Earlier than any single position's liquidation
+     distance — global de-risk on margin-account stress.
+   - **`max_total_borrow_notional_pct_equity`** — cap aggregate
+     borrowed notional at e.g. 50% of equity so a single Margin-side
+     spike can't cascade.
+
+These changes are reflected in §1 (entry rules), §4 (risk overlay),
+and the parameter defaults the strategy module will ship with. The
+spec body above is left intact for the historical record; this section
+is the authoritative version.
+
+### Single-leg vs cross-venue caveat
+
+The cross-margin choice assumes both legs sit on Binance's margin/perp
+relationship. If a future deployment splits legs across venues, "cross"
+loses meaning and we'd need per-venue buffers — flagged here so the
+assumption is explicit.
+
+---
+
+## 10. Open questions remaining
+
+None blocking. Build can proceed on this spec once (i) the AI sentiment
+backtest has answered whether sentiment adds signal to the existing
+trend bot (independent of this build, but the discipline applies), and
+(ii) the regime-switch branch has been merged to main so the box is on
+the hardened code first.
