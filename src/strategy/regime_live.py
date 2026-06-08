@@ -511,7 +511,7 @@ class RegimeLiveBot:
             Order(
                 client_order_id=client_id,
                 symbol=symbol,
-                leg=Leg.PERP,
+                leg="perp",
                 side=side,
                 qty=qty,
                 status=OrderStatus.NEW,
@@ -583,7 +583,7 @@ class RegimeLiveBot:
             Order(
                 client_order_id=client_id,
                 symbol=symbol,
-                leg=Leg.PERP,
+                leg="perp",
                 side=side,
                 qty=qty,
                 status=OrderStatus.NEW,
