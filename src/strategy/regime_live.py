@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 from datetime import datetime, UTC
 from decimal import Decimal
@@ -12,6 +11,7 @@ import numpy as np
 from sqlalchemy import select, update
 
 from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder, Leg, Side
+from src.logging_setup import log
 from src.state.db import Database
 from src.state.models import (
     Position,
@@ -22,6 +22,7 @@ from src.state.models import (
     SystemStatus,
     SystemStatusEnum,
     StateSnapshot,
+    FundingPayment,
 )
 from src.state.pnl import build_state_snapshot, compute_realized_pnl
 from src.strategy.regime_switch import (
@@ -41,7 +42,6 @@ from src.risk.perp_guards import (
 )
 from src.execution.order import generate_client_order_id, round_qty
 
-log = logging.getLogger(__name__)
 
 
 def time_until_next_bar_close(timeframe: str) -> float:
