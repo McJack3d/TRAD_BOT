@@ -1,5 +1,5 @@
 # Configuration for the Regime-Switching Long/Short Perp Daemon
-mode: paper
+mode: live
 starting_equity_usdt: 1000
 
 symbols:

@@ -10,7 +10,7 @@ the AWS Lightsail console and, later, SSH'd into the instance.
 | **BTC trend bot** (SMA) | ✅ yes, live-capable | daily cron (Part E) |
 | **IBKR sentiment bot** | ⚠️ paper only | always-on process; needs IB Gateway for real trading |
 | **Funding-arb daemon** (`src/main.py`) | ❌ no | imports the missing `src/data` package — do **not** enable `bot.service` yet |
-| **Regime-switching perp bot** | ❌ not built | spec in `docs/REGIME_SWITCH_STRATEGY.md`; backtest first |
+| **Regime-switching perp bot** | ✅ yes, live-capable | systemd service `regime-bot` (Part F) |
 
 The box is worth setting up now: it's where the regime bot lands once it
 passes its backtest gates, and the trend bot can run on it today.
