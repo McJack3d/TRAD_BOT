@@ -343,9 +343,9 @@ async def test_cooloff_guard(tmp_path: Path, db: Database) -> None:
     bot, ex = await _setup_bot(tmp_path, db)
     bot.cooloff_bars = 6
 
-    # 1. Simulate stopped out loss in meta at bar 100
+    # 1. Simulate stopped out loss in meta at bar 200
     await bot._set_meta(**{
-        "BTC/USDT:USDT_last_loss_exit_bar": "100"
+        "BTC/USDT:USDT_last_loss_exit_bar": "200"
     })
     # Add a closed loss position in DB
     p_loss = Position(
@@ -358,8 +358,8 @@ async def test_cooloff_guard(tmp_path: Path, db: Database) -> None:
     )
     await db.create_position(p_loss)
 
-    # 2. Call tick at bar 103 (within 6 bars cool-off)
-    bot.df_override = _ohlc([60000.0] * 104)  # current bar index = 103
+    # 2. Call tick at bar 203 (within 6 bars cool-off)
+    bot.df_override = _ohlc([60000.0] * 204)  # current bar index = 203
     enter_sig = SwitchSignal(Action.ENTER_LONG, EntryLeg.TREND, "enter", stop_price=58000.0)
     with patch("src.strategy.regime_live.evaluate_live", return_value=enter_sig):
         await bot.tick()
@@ -367,8 +367,8 @@ async def test_cooloff_guard(tmp_path: Path, db: Database) -> None:
     # Entry should be blocked (no open positions in DB other than the closed one)
     assert await bot.get_active_position("BTC/USDT:USDT") is None
 
-    # 3. Call tick at bar 107 (expired cool-off: 107 - 100 = 7 >= 6)
-    bot.df_override = _ohlc([60000.0] * 108)  # current bar index = 107
+    # 3. Call tick at bar 207 (expired cool-off: 207 - 200 = 7 >= 6)
+    bot.df_override = _ohlc([60000.0] * 208)  # current bar index = 207
     with patch("src.strategy.regime_live.evaluate_live", return_value=enter_sig):
         await bot.tick()
 
