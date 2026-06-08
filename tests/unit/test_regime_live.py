@@ -413,7 +413,7 @@ async def test_consecutive_losses_breaker(tmp_path: Path, db: Database) -> None:
             status=PositionStatus.CLOSED,
             perp_qty=Decimal("1.0"),
             perp_entry_price=Decimal("60000"),
-            realized_pnl=Decimal("-10"),
+            realized_pnl=Decimal("-2"),
             closed_at=datetime.now(UTC),
         )
         await db.create_position(p_loss)

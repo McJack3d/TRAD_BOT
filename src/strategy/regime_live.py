@@ -184,7 +184,7 @@ class RegimeLiveBot:
         open_positions = await self.db.open_positions()
         for pos in open_positions:
             try:
-                close_side = Side.SELL if pos.perp_qty > 0 else Side.BUY
+                close_side = "sell" if pos.perp_qty > 0 else "buy"
                 fill = await self._close_perp(pos.symbol, close_side, abs(pos.perp_qty), pos.id)
                 if fill is not None:
                     realized_pnl = Decimal("0")
@@ -360,7 +360,7 @@ class RegimeLiveBot:
 
             if stop_hit:
                 log.warning("regime_live.stop_hit", symbol=symbol, reason=reason)
-                close_side = Side.SELL if pos.side == 1 else Side.BUY
+                close_side = "sell" if pos.side == 1 else "buy"
                 fill = await self._close_perp(symbol, close_side, Decimal(str(pos.qty)), db_pos.id)
                 if fill is not None:
                     realized_pnl = Decimal("0")
@@ -383,7 +383,7 @@ class RegimeLiveBot:
 
         elif sig.action == Action.EXIT:
             if db_pos is not None:
-                close_side = Side.SELL if pos.side == 1 else Side.BUY
+                close_side = "sell" if pos.side == 1 else "buy"
                 fill = await self._close_perp(symbol, close_side, Decimal(str(pos.qty)), db_pos.id)
                 if fill is not None:
                     realized_pnl = Decimal("0")
@@ -472,10 +472,10 @@ class RegimeLiveBot:
                 log.info("regime_live.sizing.below_min_qty", symbol=symbol, qty=qty_rounded, min_qty=min_qty)
                 return
 
-            open_side = Side.BUY if sig.action == Action.ENTER_LONG else Side.SELL
+            open_side = "buy" if sig.action == Action.ENTER_LONG else "sell"
             fill = await self._open_perp(symbol, open_side, qty_rounded)
             if fill is not None:
-                signed_qty = fill.filled_qty if open_side == Side.BUY else -fill.filled_qty
+                signed_qty = fill.filled_qty if open_side == "buy" else -fill.filled_qty
                 pos_row = Position(
                     symbol=symbol,
                     status=PositionStatus.OPEN,
@@ -506,7 +506,7 @@ class RegimeLiveBot:
             except Exception as e:
                 log.warning("regime_live.set_leverage.failed", symbol=symbol, error=str(e))
 
-        client_id = generate_client_order_id(prefix=f"p{side.value[0]}")
+        client_id = generate_client_order_id(prefix=f"p{side[0]}")
         order_row = await self.db.add_order(
             Order(
                 client_order_id=client_id,
@@ -522,7 +522,7 @@ class RegimeLiveBot:
             ticker = await self.exchange.fetch_ticker(symbol, "perp")
             mid = ticker.last or (ticker.bid + ticker.ask) / 2
             slip = mid * self.assumed_slippage_bps / Decimal("10000.0")
-            fill_price = mid + slip if side == Side.BUY else mid - slip
+            fill_price = mid + slip if side == "buy" else mid - slip
             fee = qty * fill_price * self.perp_taker_bps / Decimal("10000.0")
 
             result = ExchangeOrder(
@@ -530,7 +530,7 @@ class RegimeLiveBot:
                 exchange_order_id=f"dry-{client_id}",
                 symbol=symbol,
                 leg="perp",
-                side=side.value,
+                side=side,
                 qty=qty,
                 filled_qty=qty,
                 avg_price=fill_price,
@@ -544,13 +544,13 @@ class RegimeLiveBot:
                 result = await self.exchange.submit_order(
                     symbol=symbol,
                     leg="perp",
-                    side=side.value,
+                    side=side,
                     qty=qty,
                     client_order_id=client_id,
                     reduce_only=False,
                 )
             except Exception as e:
-                log.exception("regime_live.submit.failed", symbol=symbol, side=side.value, error=str(e))
+                log.exception("regime_live.submit.failed", symbol=symbol, side=side, error=str(e))
                 await self.db.update_order_status(client_id, OrderStatus.REJECTED)
                 return None
 
@@ -578,7 +578,7 @@ class RegimeLiveBot:
         return result
 
     async def _close_perp(self, symbol: str, side: Side, qty: Decimal, position_id: int) -> ExchangeOrder | None:
-        client_id = generate_client_order_id(prefix=f"p{side.value[0]}")
+        client_id = generate_client_order_id(prefix=f"p{side[0]}")
         order_row = await self.db.add_order(
             Order(
                 client_order_id=client_id,
@@ -595,7 +595,7 @@ class RegimeLiveBot:
             ticker = await self.exchange.fetch_ticker(symbol, "perp")
             mid = ticker.last or (ticker.bid + ticker.ask) / 2
             slip = mid * self.assumed_slippage_bps / Decimal("10000.0")
-            fill_price = mid + slip if side == Side.BUY else mid - slip
+            fill_price = mid + slip if side == "buy" else mid - slip
             fee = qty * fill_price * self.perp_taker_bps / Decimal("10000.0")
 
             result = ExchangeOrder(
@@ -603,7 +603,7 @@ class RegimeLiveBot:
                 exchange_order_id=f"dry-{client_id}",
                 symbol=symbol,
                 leg="perp",
-                side=side.value,
+                side=side,
                 qty=qty,
                 filled_qty=qty,
                 avg_price=fill_price,
@@ -617,13 +617,13 @@ class RegimeLiveBot:
                 result = await self.exchange.submit_order(
                     symbol=symbol,
                     leg="perp",
-                    side=side.value,
+                    side=side,
                     qty=qty,
                     client_order_id=client_id,
                     reduce_only=True,
                 )
             except Exception as e:
-                log.exception("regime_live.submit_close.failed", symbol=symbol, side=side.value, error=str(e))
+                log.exception("regime_live.submit_close.failed", symbol=symbol, side=side, error=str(e))
                 await self.db.update_order_status(client_id, OrderStatus.REJECTED)
                 return None
 
