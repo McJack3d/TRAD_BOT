@@ -161,6 +161,19 @@ def test_sync_load_borrow_rate_works_standalone(tmp_path):
     assert not s.empty
 
 
+@pytest.mark.asyncio
+async def test_borrow_downloader_raises_clear_error_when_keys_missing(monkeypatch):
+    """REGRESSION: Binance's `fetchBorrowRateHistory` is authenticated,
+    unlike OHLCV/funding. Without keys the raw error is the unhelpful
+    'AuthenticationError: requires apiKey credential'. The downloader must
+    pre-flight env vars and raise a message that tells the user which
+    .env keys to set."""
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    with pytest.raises(RuntimeError, match="BINANCE_API_KEY"):
+        await histmod._download_borrow_rate("BTC", 0, 1)
+
+
 def test_borrow_downloader_pagination_limit_at_or_below_92():
     """REGRESSION: Binance caps `fetch_borrow_rate_history` limit at 92,
     not 100. The first attempt at this CLI on the Tokyo box failed with

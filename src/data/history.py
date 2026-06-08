@@ -122,15 +122,38 @@ async def _download_borrow_rate(
 ) -> list[tuple[int, float]]:
     """Paginate Binance's cross-margin interest-rate history for `asset`.
 
+    Unlike OHLCV and funding, `fetch_borrow_rate_history` is an
+    **authenticated** endpoint — Binance requires a real API key/secret
+    even for read-only access. Reads `BINANCE_API_KEY` / `BINANCE_API_SECRET`
+    from the env (the same vars the trend-bot daemon and `Secrets` already
+    use); raises a clear `RuntimeError` if missing so the CLI prints "set
+    your keys" rather than a generic AuthenticationError.
+
     ccxt's `fetch_borrow_rate_history` returns the rate over a `period`
     (Binance quotes daily, period = 86_400_000 ms). We annualise each
     point to APR so the carry math compares it like-for-like against the
     per-8h funding. Binance caps `limit` at 92 (≈3 months of daily
     points), so we paginate by advancing the cursor to the last timestamp
     seen — with a no-forward-progress guard against an infinite loop."""
+    import os
+
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
-    ex = ccxt.binance({"enableRateLimit": True})
+    api_key = os.environ.get("BINANCE_API_KEY") or ""
+    api_secret = os.environ.get("BINANCE_API_SECRET") or ""
+    if not api_key or not api_secret:
+        raise RuntimeError(
+            "BINANCE_API_KEY / BINANCE_API_SECRET not set — Binance's "
+            "borrow-rate history is an authenticated endpoint. Add them "
+            "to your .env (the same keys the trend bot uses; a read-only, "
+            "no-withdraw key is enough)."
+        )
+
+    ex = ccxt.binance({
+        "apiKey": api_key,
+        "secret": api_secret,
+        "enableRateLimit": True,
+    })
     out: list[tuple[int, float]] = []
     cursor = since_ms
     try:

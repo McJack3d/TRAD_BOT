@@ -34,6 +34,17 @@ _DEFAULT_SYMBOLS = ("BTC/USDT", "ETH/USDT")  # negative-leg universe (spec §9.3
 def _explain(e: Exception) -> str:
     from scripts.backtest_regime_switch import _explain_download_failure
 
+    msg = str(e)
+    # API-key errors get their own line — the generic explainer would
+    # mislabel them as an internal bug or geo-block.
+    if "BINANCE_API_KEY" in msg:
+        return msg
+    if "apiKey" in msg or "AuthenticationError" in msg or "requires" in msg.lower():
+        return (
+            "Binance authentication failed. The borrow-rate endpoint needs a "
+            "real API key/secret — set BINANCE_API_KEY and BINANCE_API_SECRET "
+            "in your .env (read-only, no-withdraw is enough)."
+        )
     return _explain_download_failure(e)
 
 
