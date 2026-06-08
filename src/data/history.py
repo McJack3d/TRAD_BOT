@@ -30,6 +30,10 @@ from pathlib import Path
 
 import pandas as pd
 
+# 365 days in milliseconds — annualises the period-based borrow rate
+# Binance returns from its interest-rate history (quoted daily).
+_MS_PER_YEAR = 31_536_000_000
+
 # ccxt timeframe → milliseconds.
 _TF_MS = {
     "1m": 60_000,
@@ -113,6 +117,48 @@ async def _download_funding(
     return [(ts, r) for ts, r in out if ts < until_ms]
 
 
+async def _download_borrow_rate(
+    asset: str, since_ms: int, until_ms: int
+) -> list[tuple[int, float]]:
+    """Paginate Binance's cross-margin interest-rate history for `asset`.
+
+    ccxt's `fetch_borrow_rate_history` returns the rate over a `period`
+    (Binance quotes daily, period = 86_400_000 ms). We annualise each
+    point to APR so the carry math compares it like-for-like against the
+    per-8h funding. The endpoint caps each query at ~30 days, so we
+    paginate by advancing the cursor to the last timestamp seen — with a
+    no-forward-progress guard against an infinite loop."""
+    import ccxt.async_support as ccxt  # type: ignore[import-untyped]
+
+    ex = ccxt.binance({"enableRateLimit": True})
+    out: list[tuple[int, float]] = []
+    cursor = since_ms
+    try:
+        await ex.load_markets()
+        while cursor < until_ms:
+            batch = await _retry(
+                lambda c=cursor: ex.fetch_borrow_rate_history(asset, since=c, limit=100)
+            )
+            if not batch:
+                break
+            for row in batch:
+                ts = int(row["timestamp"])
+                period_ms = row.get("period") or 86_400_000
+                apr = float(row["rate"]) * (_MS_PER_YEAR / period_ms)
+                out.append((ts, apr))
+            last = int(batch[-1]["timestamp"])
+            if last + 1 <= cursor:  # no forward progress — stop
+                break
+            cursor = last + 1
+            if len(batch) < 100:
+                break
+    finally:
+        await ex.close()
+    # Dedup on timestamp, clip to window, sort.
+    clipped = {ts: apr for ts, apr in out if ts < until_ms}
+    return sorted(clipped.items())
+
+
 async def _retry(coro_factory, attempts: int = 4):
     last: Exception | None = None
     for k in range(attempts):
@@ -139,6 +185,7 @@ def _ohlcv_to_df(rows: list[list[float]]) -> pd.DataFrame:
 # any network. Production code should leave them alone.
 _OHLCV_FETCHER = _download_ohlcv
 _FUNDING_FETCHER = _download_funding
+_BORROW_RATE_FETCHER = _download_borrow_rate
 
 
 async def load_ohlcv_async(
@@ -191,6 +238,37 @@ async def load_funding_async(
     return s
 
 
+async def load_borrow_rate_async(
+    asset: str,
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.Series:
+    """Load cross-margin borrow-rate history for `asset` (e.g. "BTC") as a
+    ts-indexed Series of APR — 0.06 means 6 % annualised. This is the
+    negative leg's cost series; the backtester nets it against |funding|.
+
+    Cached to Parquet alongside the OHLCV/funding pulls."""
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    path = _cache_path(cache_dir, asset, "1d", "borrow")
+    if path.exists() and not refresh:
+        s = pd.read_parquet(path)["borrow_rate_apr"]
+        s.index = pd.to_datetime(s.index, utc=True)
+        return s
+
+    until_ms = int(time.time() * 1000)
+    since_ms = until_ms - months * 30 * 86_400_000
+    rows = await _BORROW_RATE_FETCHER(asset, since_ms, until_ms)
+    if not rows:
+        return pd.Series(dtype=float)
+    idx = pd.to_datetime([ts for ts, _ in rows], unit="ms", utc=True)
+    s = pd.Series(
+        [r for _, r in rows], index=idx, name="borrow_rate_apr"
+    ).sort_index()
+    pd.DataFrame({"borrow_rate_apr": s}).to_parquet(path)
+    return s
+
+
 # ---- sync wrappers (for standalone scripts) ----------------------------
 
 
@@ -238,3 +316,15 @@ def load_funding(
     only — inside an event loop, use `load_funding_async`."""
     _ensure_no_running_loop("load_funding")
     return asyncio.run(load_funding_async(symbol, months, cache_dir, refresh))
+
+
+def load_borrow_rate(
+    asset: str,
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.Series:
+    """Sync wrapper around `load_borrow_rate_async`. For standalone
+    scripts only — inside an event loop, use `load_borrow_rate_async`."""
+    _ensure_no_running_loop("load_borrow_rate")
+    return asyncio.run(load_borrow_rate_async(asset, months, cache_dir, refresh))

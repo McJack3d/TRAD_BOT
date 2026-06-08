@@ -19,6 +19,8 @@ import pytest
 
 from src.data import history as histmod
 from src.data.history import (
+    load_borrow_rate,
+    load_borrow_rate_async,
     load_funding,
     load_funding_async,
     load_ohlcv,
@@ -40,6 +42,13 @@ def _make_funding_rows(n: int = 30) -> list[tuple[int, float]]:
     return [(_FAKE_TS + i * step, 0.0001) for i in range(n)]
 
 
+def _make_borrow_rows(n: int = 30) -> list[tuple[int, float]]:
+    """Daily borrow-rate points already annualised to APR (the downloader
+    does the annualisation; the loader just frames them)."""
+    step = 86_400_000
+    return [(_FAKE_TS + i * step, 0.06) for i in range(n)]
+
+
 @pytest.fixture(autouse=True)
 def _stub_downloaders(monkeypatch):
     """Replace the ccxt downloaders with deterministic stubs so the
@@ -51,8 +60,12 @@ def _stub_downloaders(monkeypatch):
     async def fake_funding(symbol, since_ms, until_ms):
         return _make_funding_rows()
 
+    async def fake_borrow(asset, since_ms, until_ms):
+        return _make_borrow_rows()
+
     monkeypatch.setattr(histmod, "_OHLCV_FETCHER", fake_ohlcv)
     monkeypatch.setattr(histmod, "_FUNDING_FETCHER", fake_funding)
+    monkeypatch.setattr(histmod, "_BORROW_RATE_FETCHER", fake_borrow)
 
 
 @pytest.mark.asyncio
@@ -109,6 +122,43 @@ async def test_load_funding_async(tmp_path):
     s = await load_funding_async("BTC/USDT", months=1, cache_dir=str(tmp_path))
     assert not s.empty
     assert s.index.tz is not None
+
+
+@pytest.mark.asyncio
+async def test_load_borrow_rate_async(tmp_path):
+    s = await load_borrow_rate_async("BTC", months=1, cache_dir=str(tmp_path))
+    assert not s.empty
+    assert s.index.tz is not None  # UTC
+    assert s.name == "borrow_rate_apr"
+    assert (s == 0.06).all()
+
+
+@pytest.mark.asyncio
+async def test_load_borrow_rate_async_uses_cache(tmp_path, monkeypatch):
+    s1 = await load_borrow_rate_async("BTC", months=1, cache_dir=str(tmp_path))
+    assert not s1.empty
+
+    async def explode(*a, **kw):
+        raise RuntimeError("fetcher should not be called when cache exists")
+
+    monkeypatch.setattr(histmod, "_BORROW_RATE_FETCHER", explode)
+    s2 = await load_borrow_rate_async("BTC", months=1, cache_dir=str(tmp_path))
+    pd.testing.assert_series_equal(s1, s2)
+
+
+@pytest.mark.asyncio
+async def test_load_borrow_rate_async_empty_returns_empty_series(tmp_path, monkeypatch):
+    async def empty(*a, **kw):
+        return []
+
+    monkeypatch.setattr(histmod, "_BORROW_RATE_FETCHER", empty)
+    s = await load_borrow_rate_async("DOGE", months=1, cache_dir=str(tmp_path))
+    assert s.empty
+
+
+def test_sync_load_borrow_rate_works_standalone(tmp_path):
+    s = load_borrow_rate("BTC", months=1, cache_dir=str(tmp_path))
+    assert not s.empty
 
 
 def test_sync_load_ohlcv_works_standalone(tmp_path):

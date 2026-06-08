@@ -12,11 +12,13 @@ from decimal import Decimal
 
 from src.adapters.exchange_base import (
     Balance,
+    BorrowInfo,
     ExchangeAdapter,
     ExchangeOrder,
     ExchangePosition,
     FundingRate,
     Leg,
+    MarginAccount,
     Side,
     Ticker,
 )
@@ -50,6 +52,13 @@ class FakeExchange(ExchangeAdapter):
         self._orders: dict[str, ExchangeOrder] = {}  # client_order_id → order
         self._server_time_ms = int(datetime.now(UTC).timestamp() * 1000)
         self._leverage: dict[str, int] = {}
+        # Margin state (for the two-sided carry's negative leg).
+        # asset → (borrowed_amount, interest_accrued)
+        self._borrows: dict[str, tuple[Decimal, Decimal]] = {}
+        # asset → live APR (e.g. Decimal('0.06') for 6%). Harness sets.
+        self._borrow_rates: dict[str, Decimal] = {}
+        # Margin-account spot balances (separate from cross-spot).
+        self._margin_balances: dict[str, Balance] = {}
 
     # ---- harness helpers ---------------------------------------------
 
@@ -73,6 +82,26 @@ class FakeExchange(ExchangeAdapter):
 
     def advance_clock(self, ms: int) -> None:
         self._server_time_ms += ms
+
+    # ---- margin harness helpers -------------------------------------
+
+    def set_borrow_rate(self, asset: str, apr: Decimal) -> None:
+        """Test/paper harness sets the live borrow APR for `asset`."""
+        self._borrow_rates[asset] = apr
+
+    def set_margin_balance(self, asset: str, total: Decimal) -> None:
+        self._margin_balances[asset] = Balance(asset, total, Decimal("0"), total)
+
+    def accrue_borrow_interest(self, hours: float = 8.0) -> None:
+        """Advance accrued interest by `hours` at the live rate. Tests
+        call this between settlements to simulate carry."""
+        from decimal import Decimal as D
+
+        years = D(str(hours)) / D("8760")
+        for asset, (borrowed, accrued) in list(self._borrows.items()):
+            rate = self._borrow_rates.get(asset, D("0"))
+            new = accrued + borrowed * rate * years
+            self._borrows[asset] = (borrowed, new)
 
     # ---- ExchangeAdapter ---------------------------------------------
 
@@ -259,6 +288,89 @@ class FakeExchange(ExchangeAdapter):
         bal = self._balances.get(key) or Balance(asset, Decimal("0"), Decimal("0"), Decimal("0"))
         new_total = bal.total + amount
         self._balances[key] = Balance(asset, new_total, Decimal("0"), new_total)
+
+    # ---- cross-margin borrow / repay --------------------------------
+
+    async def borrow(self, asset: str, amount: Decimal) -> None:
+        if amount <= 0:
+            raise ValueError("borrow amount must be positive")
+        # Simulate "no inventory" when no rate has been set for the asset.
+        if asset not in self._borrow_rates:
+            raise RuntimeError(
+                f"FakeExchange: no borrow rate set for {asset} — call set_borrow_rate first"
+            )
+        borrowed, accrued = self._borrows.get(asset, (Decimal("0"), Decimal("0")))
+        self._borrows[asset] = (borrowed + amount, accrued)
+        # Crediting the borrowed asset to the margin account (the bot
+        # immediately sells it on the spot market for the short leg).
+        bal = self._margin_balances.get(asset) or Balance(asset, Decimal("0"), Decimal("0"), Decimal("0"))
+        new = bal.total + amount
+        self._margin_balances[asset] = Balance(asset, new, Decimal("0"), new)
+
+    async def repay(self, asset: str, amount: Decimal) -> None:
+        if amount <= 0:
+            raise ValueError("repay amount must be positive")
+        borrowed, accrued = self._borrows.get(asset, (Decimal("0"), Decimal("0")))
+        # Interest first, then principal — matches Binance convention.
+        if amount <= accrued:
+            self._borrows[asset] = (borrowed, accrued - amount)
+        else:
+            remaining = amount - accrued
+            new_borrowed = max(Decimal("0"), borrowed - remaining)
+            self._borrows[asset] = (new_borrowed, Decimal("0"))
+        bal = self._margin_balances.get(asset) or Balance(asset, Decimal("0"), Decimal("0"), Decimal("0"))
+        self._margin_balances[asset] = Balance(
+            asset, max(Decimal("0"), bal.total - amount), Decimal("0"),
+            max(Decimal("0"), bal.total - amount),
+        )
+
+    async def fetch_borrow_rate(self, asset: str) -> Decimal:
+        if asset not in self._borrow_rates:
+            raise RuntimeError(f"FakeExchange: no borrow rate set for {asset}")
+        return self._borrow_rates[asset]
+
+    async def fetch_borrow_info(self, asset: str) -> BorrowInfo:
+        borrowed, accrued = self._borrows.get(asset, (Decimal("0"), Decimal("0")))
+        rate = self._borrow_rates.get(asset, Decimal("0"))
+        return BorrowInfo(
+            asset=asset,
+            borrowed=borrowed,
+            interest_accrued=accrued,
+            borrow_rate_apr=rate,
+        )
+
+    async def fetch_margin_account(self) -> MarginAccount:
+        # Compute asset/liability totals in USDT. Liabilities are
+        # borrowed principal + accrued interest priced at the asset's
+        # current mark/last ticker.
+        liabilities = Decimal("0")
+        for asset, (borrowed, accrued) in self._borrows.items():
+            mark = self._asset_mark_usdt(asset)
+            liabilities += (borrowed + accrued) * mark
+        assets = Decimal("0")
+        for bal in self._margin_balances.values():
+            mark = self._asset_mark_usdt(bal.asset)
+            assets += bal.total * mark
+        if liabilities > 0:
+            level = assets / liabilities
+        else:
+            level = Decimal("9999")  # effectively infinite when no debt
+        return MarginAccount(
+            total_asset_value=assets,
+            total_liability_value=liabilities,
+            margin_level=level,
+            balances=dict(self._margin_balances),
+        )
+
+    def _asset_mark_usdt(self, asset: str) -> Decimal:
+        """Best-effort USDT mark for `asset`. USDT itself is $1; for
+        other assets, look up the spot ticker `ASSET/USDT`."""
+        if asset == "USDT":
+            return Decimal("1")
+        t = self._tickers.get((f"{asset}/USDT", "spot"))
+        if t is not None:
+            return t.last
+        return Decimal("0")
 
 
 def _estimate_liq_price(qty: Decimal, entry: Decimal, margin: Decimal) -> Decimal:
