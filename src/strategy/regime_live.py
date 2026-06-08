@@ -71,7 +71,9 @@ def start_of_utc_day(dt: datetime) -> datetime:
     return dt.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-async def _safe_unrealized(exchange: ExchangeAdapter) -> Decimal:
+async def _safe_unrealized(exchange: ExchangeAdapter, skip: bool = False) -> Decimal:
+    if skip:
+        return Decimal("0")
     try:
         positions = await exchange.fetch_positions()
     except Exception as e:
@@ -237,7 +239,8 @@ class RegimeLiveBot:
 
         # 1. Check account-level risk guards
         daily_realized, cumulative_realized = await compute_realized_pnl(self.db, now_utc)
-        total_unrealized = await _safe_unrealized(self.exchange)
+        skip_exchange = self.mode == "DRY_RUN"
+        total_unrealized = await _safe_unrealized(self.exchange, skip=skip_exchange)
 
         daily_stop_check = check_account_daily_stop(
             daily_realized,
@@ -284,12 +287,24 @@ class RegimeLiveBot:
 
         # 3. State snapshot update
         try:
-            snap = await build_state_snapshot(
-                self.db,
-                self.exchange,
-                self.starting_equity_usdt,
-                now_utc
-            )
+            if skip_exchange:
+                # DRY_RUN: build snapshot from DB only, no exchange calls
+                snap = StateSnapshot(
+                    ts=now_utc,
+                    equity_usdt=equity,
+                    spot_balance_usdt=Decimal("0"),
+                    perp_balance_usdt=Decimal("0"),
+                    unrealized_pnl=Decimal("0"),
+                    realized_pnl_daily=daily_realized,
+                    realized_pnl_cumulative=cumulative_realized,
+                )
+            else:
+                snap = await build_state_snapshot(
+                    self.db,
+                    self.exchange,
+                    self.starting_equity_usdt,
+                    now_utc
+                )
             await self.db.add_snapshot(snap)
         except Exception as e:
             log.warning("regime_live.tick.snapshot_failed", error=str(e))
@@ -738,6 +753,8 @@ class RegimeLiveBot:
             return pos_pnl + funding_pnl
 
     async def _get_asset_unrealized_pnl(self, symbol: str) -> Decimal:
+        if self.mode == "DRY_RUN":
+            return Decimal("0")
         try:
             positions = await self.exchange.fetch_positions()
             for p in positions:
