@@ -44,7 +44,6 @@ class BotStatus:
     last_price: Decimal
     base_asset: str = "BTC"
     quote_asset: str = "USDT"
-    last_price: Decimal
 
 
 class SimpleBot:

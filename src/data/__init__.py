@@ -1,7 +1,12 @@
 """Market data + history loaders.
 
-Currently provides the OHLCV / funding history loader used by the
-regime-switch backtester (`src.data.history`). The live market-data
-stream modules (`market_data`, `binance_ws`) referenced by the
-funding-arb daemon are not part of this package yet.
+Provides the live market-data stream modules (MarketData, BinanceWebSocket)
+and the OHLCV / funding history loader used by backtesting.
 """
+
+from __future__ import annotations
+
+from src.data.binance_ws import BinanceWebSocket
+from src.data.market_data import MarketData, MarketSnapshot
+
+__all__ = ["BinanceWebSocket", "MarketData", "MarketSnapshot"]

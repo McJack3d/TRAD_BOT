@@ -161,7 +161,6 @@ def _fetch_status(bot: SimpleBot):
     st.session_state["status"] = status
     st.session_state["status_age"] = pd.Timestamp.now(tz="UTC")
     return status
-    return status
 
 
 def main() -> None:
