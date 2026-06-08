@@ -189,19 +189,21 @@ post-mortem — same discipline as the regime build.
 
 ## 7. Build order (on sign-off)
 
-1. Adapter surface: borrow/repay/rates/margin-balances/margin-order on
+1. ✅ Adapter surface: borrow/repay/rates/margin-account on
    `ExchangeAdapter` + `BinanceAdapter` + `FakeExchange` (+ tests).
-2. Borrow-rate loader in `src/data/history.py` (+ tests).
-3. Carry math module: pure `net_carry()` + entry/exit decision
+2. ✅ Borrow-rate loader in `src/data/history.py` (+ tests).
+3. ✅ Carry math module: pure `net_carry()` + entry/exit decision
    functions for both legs (+ tests). This is the heart — test it hard.
-4. Backtester reusing the data loaders; per-leg attribution (+ tests).
-5. **Run the backtest across 2021–2024 incl. the 2022 bear.** Check
-   gates. STOP here if the negative leg fails.
-6. Only if gates pass: state-model changes, risk-overlay extensions,
+4. ✅ Backtester reusing the data loaders; per-leg attribution (+ tests).
+5. ⏳ **Run the backtest across 2021–2024 incl. the 2022 bear.** Check
+   gates. STOP here if the negative leg fails. *(Must run on the Tokyo
+   box — see §11. Binance is geo-blocked from the build env.)*
+6. ⬜ Only if gates pass: state-model changes, risk-overlay extensions,
    execution wiring (atomic two-leg open with borrow pre-flight),
    `farb-status` display of borrow cost, config, paper deploy.
 
-Steps 1–5 are the validation. Step 6 is gated on the numbers.
+Steps 1–4 are built and green (offline tests). Step 5 is the validation
+gate; step 6 is gated on the numbers.
 
 ---
 
@@ -291,3 +293,41 @@ backtest has answered whether sentiment adds signal to the existing
 trend bot (independent of this build, but the discipline applies), and
 (ii) the regime-switch branch has been merged to main so the box is on
 the hardened code first.
+
+---
+
+## 11. Running Step 5 (the acceptance gate) on the box
+
+Binance funding + cross-margin borrow-rate history are behind a
+geo-gated API that the build/CI environment can't reach. The validation
+run therefore happens on the Lightsail (Tokyo) box, where the trend bot
+already pulls Binance fine.
+
+```bash
+cd ~/TRAD_BOT && git pull origin claude/keen-clarke-bpgDr
+source .venv/bin/activate
+
+# The whole gate in one command (BTC + ETH, 48 months → reaches the 2022 bear):
+python -m scripts.tradbot carry-backtest
+
+# Or from the menu: `tradbot menu` → 5 (Two-sided funding carry) → 1.
+# Useful flags: --months 60 (reach further back), --refresh (rebuild the
+# Parquet cache), --symbols BTC/USDT (single symbol).
+```
+
+It prints, per symbol, a per-leg attribution table and the four
+acceptance gates, then a universe verdict. **Read the negative-leg row.**
+
+- **All gates PASS** → proceed to step 6 (state model, risk overlay,
+  atomic two-leg execution, paper deploy). Nothing goes live before
+  paper acceptance.
+- **Any gate FAILS** → ship positive-only (no regression to the existing
+  one-sided daemon) and shelve the negative leg with a post-mortem in
+  `docs/`, exactly as we did for the regime build. The honest, expected
+  outcome per §0: the negative side is a *modest* uplift concentrated in
+  bear regimes, and it may not clear borrow costs at all.
+
+Caveat on borrow-rate depth: Binance's interest-rate history endpoint
+may not reach as far back as funding does. If the negative leg shows
+near-zero episodes, check whether the borrow series actually covers the
+negative-funding windows (the CLI warns when borrow history is empty).

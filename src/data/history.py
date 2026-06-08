@@ -30,6 +30,10 @@ from pathlib import Path
 
 import pandas as pd
 
+# 365 days in milliseconds — annualises the period-based borrow rate
+# Binance returns from its interest-rate history (quoted daily).
+_MS_PER_YEAR = 31_536_000_000
+
 # ccxt timeframe → milliseconds.
 _TF_MS = {
     "1m": 60_000,
@@ -113,6 +117,98 @@ async def _download_funding(
     return [(ts, r) for ts, r in out if ts < until_ms]
 
 
+def _binance_credentials() -> tuple[str, str]:
+    """Resolve Binance API credentials. Checks real environment variables
+    first (cheap, no import), then falls back to the project's `Secrets`
+    config which also reads the `.env` file — the key fix: keys placed in
+    `.env` are loaded by pydantic into `Secrets`, NOT exported to
+    `os.environ`, so an env-only check never sees them. Returns
+    (key, secret); either may be empty."""
+    import os
+
+    key = os.environ.get("BINANCE_API_KEY") or ""
+    secret = os.environ.get("BINANCE_API_SECRET") or ""
+    if key and secret:
+        return key, secret
+    try:
+        from src.config import Secrets
+
+        s = Secrets()
+        return (key or s.binance_api_key or "", secret or s.binance_api_secret or "")
+    except Exception:  # noqa: BLE001 — config import/parse must not crash the loader
+        return key, secret
+
+
+async def _download_borrow_rate(
+    asset: str, since_ms: int, until_ms: int
+) -> list[tuple[int, float]]:
+    """Paginate Binance's cross-margin interest-rate history for `asset`.
+
+    Unlike OHLCV and funding, `fetch_borrow_rate_history` is an
+    **authenticated** endpoint — Binance requires a real API key/secret
+    even for read-only access. Credentials are resolved via the project's
+    `Secrets` config (the same source the trend bot uses), which reads
+    both real env vars AND the `.env` file; a clear `RuntimeError` is
+    raised if neither has them, so the CLI prints "set your keys" rather
+    than an opaque ccxt AuthenticationError.
+
+    ccxt's `fetch_borrow_rate_history` wrapper auto-computed an
+    `endTime` that Binance rejected with `-1100 Illegal characters` on
+    older windows, so we hit the raw sapi endpoint directly with explicit
+    `startTime` / `endTime`. Each request covers Binance's hard 30-day
+    window cap; we paginate by advancing the window. Empty windows are
+    skipped (older history has gaps), not treated as end-of-data. The
+    response is annualised: Binance returns `dailyInterestRate`; APR =
+    daily × 365."""
+    import ccxt.async_support as ccxt  # type: ignore[import-untyped]
+
+    api_key, api_secret = _binance_credentials()
+    if not api_key or not api_secret:
+        raise RuntimeError(
+            "BINANCE_API_KEY / BINANCE_API_SECRET not set — Binance's "
+            "borrow-rate history is an authenticated endpoint. Add them "
+            "to your .env (the same keys the trend bot uses; a read-only, "
+            "no-withdraw key is enough)."
+        )
+
+    ex = ccxt.binance({
+        "apiKey": api_key,
+        "secret": api_secret,
+        "enableRateLimit": True,
+    })
+    out: list[tuple[int, float]] = []
+    window_ms = 30 * 86_400_000  # Binance hard cap per request
+    cursor = since_ms
+    try:
+        await ex.load_markets()
+        while cursor < until_ms:
+            end_window = min(cursor + window_ms, until_ms)
+            batch = await _retry(
+                lambda c=cursor, e=end_window: ex.sapi_get_margin_interestratehistory({
+                    "asset": asset,
+                    "startTime": c,
+                    "endTime": e,
+                    "limit": 90,
+                })
+            )
+            if batch:
+                for row in batch:
+                    ts = int(row.get("timestamp") or row.get("time") or 0)
+                    if ts == 0:
+                        continue
+                    daily = float(row.get("dailyInterestRate") or 0)
+                    apr = daily * 365.0
+                    out.append((ts, apr))
+            # Always advance the window — older history has gaps; an empty
+            # response there is "no data in this 30-day slice", not "stop".
+            cursor = end_window + 1
+    finally:
+        await ex.close()
+    # Dedup on timestamp, clip to window, sort.
+    clipped = {ts: apr for ts, apr in out if ts < until_ms}
+    return sorted(clipped.items())
+
+
 async def _retry(coro_factory, attempts: int = 4):
     last: Exception | None = None
     for k in range(attempts):
@@ -139,6 +235,7 @@ def _ohlcv_to_df(rows: list[list[float]]) -> pd.DataFrame:
 # any network. Production code should leave them alone.
 _OHLCV_FETCHER = _download_ohlcv
 _FUNDING_FETCHER = _download_funding
+_BORROW_RATE_FETCHER = _download_borrow_rate
 
 
 async def load_ohlcv_async(
@@ -191,6 +288,37 @@ async def load_funding_async(
     return s
 
 
+async def load_borrow_rate_async(
+    asset: str,
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.Series:
+    """Load cross-margin borrow-rate history for `asset` (e.g. "BTC") as a
+    ts-indexed Series of APR — 0.06 means 6 % annualised. This is the
+    negative leg's cost series; the backtester nets it against |funding|.
+
+    Cached to Parquet alongside the OHLCV/funding pulls."""
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    path = _cache_path(cache_dir, asset, "1d", "borrow")
+    if path.exists() and not refresh:
+        s = pd.read_parquet(path)["borrow_rate_apr"]
+        s.index = pd.to_datetime(s.index, utc=True)
+        return s
+
+    until_ms = int(time.time() * 1000)
+    since_ms = until_ms - months * 30 * 86_400_000
+    rows = await _BORROW_RATE_FETCHER(asset, since_ms, until_ms)
+    if not rows:
+        return pd.Series(dtype=float)
+    idx = pd.to_datetime([ts for ts, _ in rows], unit="ms", utc=True)
+    s = pd.Series(
+        [r for _, r in rows], index=idx, name="borrow_rate_apr"
+    ).sort_index()
+    pd.DataFrame({"borrow_rate_apr": s}).to_parquet(path)
+    return s
+
+
 # ---- sync wrappers (for standalone scripts) ----------------------------
 
 
@@ -238,3 +366,15 @@ def load_funding(
     only — inside an event loop, use `load_funding_async`."""
     _ensure_no_running_loop("load_funding")
     return asyncio.run(load_funding_async(symbol, months, cache_dir, refresh))
+
+
+def load_borrow_rate(
+    asset: str,
+    months: int = 6,
+    cache_dir: str = "data/history",
+    refresh: bool = False,
+) -> pd.Series:
+    """Sync wrapper around `load_borrow_rate_async`. For standalone
+    scripts only — inside an event loop, use `load_borrow_rate_async`."""
+    _ensure_no_running_loop("load_borrow_rate")
+    return asyncio.run(load_borrow_rate_async(asset, months, cache_dir, refresh))

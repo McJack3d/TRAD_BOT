@@ -14,14 +14,20 @@ import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
 from src.adapters.exchange_base import (
     Balance,
+    BorrowInfo,
     ExchangeAdapter,
     ExchangeOrder,
     ExchangePosition,
     FundingRate,
     Leg,
+    MarginAccount,
     Side,
     Ticker,
 )
+
+# 365 days expressed in milliseconds — used to annualise the period-based
+# borrow rate ccxt returns (Binance quotes a *daily* cross-margin rate).
+_MS_PER_YEAR = Decimal("31536000000")
 
 
 def _d(x) -> Decimal:
@@ -200,6 +206,91 @@ class BinanceAdapter(ExchangeAdapter):
     # ---- margin -------------------------------------------------------
     async def add_margin(self, symbol: str, amount: Decimal) -> None:
         await self.perp.add_margin(symbol, float(amount))
+
+    # ---- cross-margin borrow/repay (two-sided carry, negative leg) ----
+    #
+    # Borrow/repay go through the *spot* ccxt client because Binance's
+    # cross-margin account is part of the spot/margin API surface, not the
+    # USDT-M futures one. The perp leg keeps using `self.perp`.
+
+    async def borrow(self, asset: str, amount: Decimal) -> None:
+        """Borrow `asset` on the cross-margin account.
+
+        Raises on any exchange refusal (no inventory, rate spike, ratio
+        breach) — the execution engine pre-flights this and aborts the
+        whole two-leg open cleanly, never leaving the perp leg naked."""
+        await self.spot.borrow_cross_margin(asset, float(amount))
+
+    async def repay(self, asset: str, amount: Decimal) -> None:
+        """Repay `asset` on the cross-margin account. Binance applies the
+        repayment to accrued interest first, then principal."""
+        await self.spot.repay_cross_margin(asset, float(amount))
+
+    async def fetch_borrow_rate(self, asset: str) -> Decimal:
+        """Live cross-margin borrow rate for `asset`, normalised to APR.
+
+        ccxt's `fetchCrossBorrowRate` returns a rate over a `period`
+        (Binance quotes daily, period = 86_400_000 ms). We annualise to a
+        single APR figure so the carry math can compare it directly to the
+        per-8h funding via `borrow_rate_per_8h`."""
+        raw = await self.spot.fetch_cross_borrow_rate(asset)
+        rate = _d(raw.get("rate"))
+        period_ms = raw.get("period") or 86_400_000
+        periods_per_year = _MS_PER_YEAR / Decimal(str(period_ms))
+        return rate * periods_per_year
+
+    async def fetch_borrow_info(self, asset: str) -> BorrowInfo:
+        """Outstanding principal + accrued interest for `asset`, read from
+        the authoritative cross-margin account `userAssets`, plus the live
+        annualised rate."""
+        raw = await self.spot.fetch_balance({"type": "margin"})
+        user_assets = (raw.get("info") or {}).get("userAssets") or []
+        borrowed = Decimal("0")
+        interest = Decimal("0")
+        for ua in user_assets:
+            if ua.get("asset") == asset:
+                borrowed = _d(ua.get("borrowed"))
+                interest = _d(ua.get("interest"))
+                break
+        rate = await self.fetch_borrow_rate(asset)
+        return BorrowInfo(
+            asset=asset,
+            borrowed=borrowed,
+            interest_accrued=interest,
+            borrow_rate_apr=rate,
+        )
+
+    async def fetch_margin_account(self) -> MarginAccount:
+        """Cross-margin account snapshot. `marginLevel` is the live ratio
+        the risk overlay gates on (Binance reports a large sentinel when
+        there is no debt). Asset/liability totals are reported by Binance
+        in BTC; we convert to USDT via the BTC mark for the dollar gate."""
+        raw = await self.spot.fetch_balance({"type": "margin"})
+        info = raw.get("info") or {}
+        margin_level = _d(info.get("marginLevel"))
+        total_asset_btc = _d(info.get("totalAssetOfBtc"))
+        total_liab_btc = _d(info.get("totalLiabilityOfBtc"))
+        btc_usdt = (
+            await self.fetch_mark_price("BTC/USDT")
+            if (total_asset_btc or total_liab_btc)
+            else Decimal("0")
+        )
+        balances: dict[str, Balance] = {}
+        for asset, total in (raw.get("total") or {}).items():
+            if total is None:
+                continue
+            balances[asset] = Balance(
+                asset=asset,
+                free=_d((raw.get("free") or {}).get(asset)),
+                used=_d((raw.get("used") or {}).get(asset)),
+                total=_d(total),
+            )
+        return MarginAccount(
+            total_asset_value=total_asset_btc * btc_usdt,
+            total_liability_value=total_liab_btc * btc_usdt,
+            margin_level=margin_level if margin_level > 0 else Decimal("9999"),
+            balances=balances,
+        )
 
 
 def _to_exchange_order(raw: dict, leg: Leg) -> ExchangeOrder:
