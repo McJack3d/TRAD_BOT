@@ -152,12 +152,14 @@ async def _download_borrow_rate(
     raised if neither has them, so the CLI prints "set your keys" rather
     than an opaque ccxt AuthenticationError.
 
-    ccxt's `fetch_borrow_rate_history` returns the rate over a `period`
-    (Binance quotes daily, period = 86_400_000 ms). We annualise each
-    point to APR so the carry math compares it like-for-like against the
-    per-8h funding. Binance caps `limit` at 92 (≈3 months of daily
-    points), so we paginate by advancing the cursor to the last timestamp
-    seen — with a no-forward-progress guard against an infinite loop."""
+    ccxt's `fetch_borrow_rate_history` wrapper auto-computed an
+    `endTime` that Binance rejected with `-1100 Illegal characters` on
+    older windows, so we hit the raw sapi endpoint directly with explicit
+    `startTime` / `endTime`. Each request covers Binance's hard 30-day
+    window cap; we paginate by advancing the window. Empty windows are
+    skipped (older history has gaps), not treated as end-of-data. The
+    response is annualised: Binance returns `dailyInterestRate`; APR =
+    daily × 365."""
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
     api_key, api_secret = _binance_credentials()
@@ -175,26 +177,31 @@ async def _download_borrow_rate(
         "enableRateLimit": True,
     })
     out: list[tuple[int, float]] = []
+    window_ms = 30 * 86_400_000  # Binance hard cap per request
     cursor = since_ms
     try:
         await ex.load_markets()
         while cursor < until_ms:
+            end_window = min(cursor + window_ms, until_ms)
             batch = await _retry(
-                lambda c=cursor: ex.fetch_borrow_rate_history(asset, since=c, limit=92)
+                lambda c=cursor, e=end_window: ex.sapi_get_margin_interestratehistory({
+                    "asset": asset,
+                    "startTime": c,
+                    "endTime": e,
+                    "limit": 90,
+                })
             )
-            if not batch:
-                break
-            for row in batch:
-                ts = int(row["timestamp"])
-                period_ms = row.get("period") or 86_400_000
-                apr = float(row["rate"]) * (_MS_PER_YEAR / period_ms)
-                out.append((ts, apr))
-            last = int(batch[-1]["timestamp"])
-            if last + 1 <= cursor:  # no forward progress — stop
-                break
-            cursor = last + 1
-            if len(batch) < 92:
-                break
+            if batch:
+                for row in batch:
+                    ts = int(row.get("timestamp") or row.get("time") or 0)
+                    if ts == 0:
+                        continue
+                    daily = float(row.get("dailyInterestRate") or 0)
+                    apr = daily * 365.0
+                    out.append((ts, apr))
+            # Always advance the window — older history has gaps; an empty
+            # response there is "no data in this 30-day slice", not "stop".
+            cursor = end_window + 1
     finally:
         await ex.close()
     # Dedup on timestamp, clip to window, sort.

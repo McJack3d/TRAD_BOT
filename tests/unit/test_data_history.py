@@ -195,17 +195,19 @@ def test_binance_credentials_falls_back_to_dotenv(tmp_path, monkeypatch):
     assert histmod._binance_credentials() == ("dotenvkey", "dotenvsecret")
 
 
-def test_borrow_downloader_pagination_limit_at_or_below_92():
-    """REGRESSION: Binance caps `fetch_borrow_rate_history` limit at 92,
-    not 100. The first attempt at this CLI on the Tokyo box failed with
-    `BadRequest: limit parameter cannot exceed 92`. This test inspects
-    the downloader's source so a future bump back to 100 fails loudly
-    in CI rather than only at runtime on the box."""
+def test_borrow_downloader_uses_raw_sapi_with_30d_window():
+    """REGRESSION: ccxt's `fetch_borrow_rate_history` wrapper auto-set an
+    `endTime` Binance rejected with `-1100 Illegal characters`. The
+    downloader now hits the raw sapi endpoint with explicit start/end and
+    paginates in 30-day windows (Binance's hard per-request cap). This
+    test inspects the source so a regression to the wrapper or to a wider
+    window fails loudly in CI rather than only at runtime on the box."""
     import inspect
 
     src = inspect.getsource(histmod._download_borrow_rate)
-    assert "limit=92" in src
-    assert "limit=100" not in src
+    assert "sapi_get_margin_interestratehistory" in src
+    assert "ex.fetch_borrow_rate_history" not in src  # the bad wrapper
+    assert "30 * 86_400_000" in src  # the 30-day window constant
 
 
 def test_sync_load_ohlcv_works_standalone(tmp_path):
