@@ -5,11 +5,11 @@ Wants=network-online.target chronyd.service
 
 [Service]
 Type=simple
-User=botuser
-Group=botuser
-WorkingDirectory=/opt/trad-bot
-EnvironmentFile=/opt/trad-bot/.env
-ExecStart=/opt/trad-bot/.venv/bin/python -m src.strategy.regime_live --config /opt/trad-bot/config/regime_switch.yaml
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/TRAD_BOT
+EnvironmentFile=/home/ubuntu/TRAD_BOT/.env
+ExecStart=/home/ubuntu/TRAD_BOT/.venv/bin/python -m src.strategy.regime_live --config config/regime_switch.yaml --kill-file data/KILL
 Restart=on-failure
 RestartSec=5s
 StandardOutput=journal
@@ -20,15 +20,14 @@ SyslogIdentifier=trad-bot-regime
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/opt/trad-bot/data /var/lib/bot
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/TRAD_BOT/data
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
 RestrictNamespaces=true
 LockPersonality=true
-MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
