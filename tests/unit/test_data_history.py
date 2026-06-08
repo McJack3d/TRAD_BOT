@@ -162,16 +162,37 @@ def test_sync_load_borrow_rate_works_standalone(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_borrow_downloader_raises_clear_error_when_keys_missing(monkeypatch):
+async def test_borrow_downloader_raises_clear_error_when_keys_missing(
+    tmp_path, monkeypatch
+):
     """REGRESSION: Binance's `fetchBorrowRateHistory` is authenticated,
     unlike OHLCV/funding. Without keys the raw error is the unhelpful
     'AuthenticationError: requires apiKey credential'. The downloader must
-    pre-flight env vars and raise a message that tells the user which
-    .env keys to set."""
+    pre-flight credentials and raise a message naming the .env keys.
+    chdir to an empty tmp so no stray .env satisfies the check."""
     monkeypatch.delenv("BINANCE_API_KEY", raising=False)
     monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="BINANCE_API_KEY"):
         await histmod._download_borrow_rate("BTC", 0, 1)
+
+
+def test_binance_credentials_reads_env_vars(monkeypatch):
+    monkeypatch.setenv("BINANCE_API_KEY", "envkey")
+    monkeypatch.setenv("BINANCE_API_SECRET", "envsecret")
+    assert histmod._binance_credentials() == ("envkey", "envsecret")
+
+
+def test_binance_credentials_falls_back_to_dotenv(tmp_path, monkeypatch):
+    """The whole point of the fix: keys in `.env` (loaded by Secrets, not
+    exported to os.environ) must still be found."""
+    monkeypatch.delenv("BINANCE_API_KEY", raising=False)
+    monkeypatch.delenv("BINANCE_API_SECRET", raising=False)
+    (tmp_path / ".env").write_text(
+        "BINANCE_API_KEY=dotenvkey\nBINANCE_API_SECRET=dotenvsecret\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    assert histmod._binance_credentials() == ("dotenvkey", "dotenvsecret")
 
 
 def test_borrow_downloader_pagination_limit_at_or_below_92():

@@ -117,6 +117,28 @@ async def _download_funding(
     return [(ts, r) for ts, r in out if ts < until_ms]
 
 
+def _binance_credentials() -> tuple[str, str]:
+    """Resolve Binance API credentials. Checks real environment variables
+    first (cheap, no import), then falls back to the project's `Secrets`
+    config which also reads the `.env` file — the key fix: keys placed in
+    `.env` are loaded by pydantic into `Secrets`, NOT exported to
+    `os.environ`, so an env-only check never sees them. Returns
+    (key, secret); either may be empty."""
+    import os
+
+    key = os.environ.get("BINANCE_API_KEY") or ""
+    secret = os.environ.get("BINANCE_API_SECRET") or ""
+    if key and secret:
+        return key, secret
+    try:
+        from src.config import Secrets
+
+        s = Secrets()
+        return (key or s.binance_api_key or "", secret or s.binance_api_secret or "")
+    except Exception:  # noqa: BLE001 — config import/parse must not crash the loader
+        return key, secret
+
+
 async def _download_borrow_rate(
     asset: str, since_ms: int, until_ms: int
 ) -> list[tuple[int, float]]:
@@ -124,10 +146,11 @@ async def _download_borrow_rate(
 
     Unlike OHLCV and funding, `fetch_borrow_rate_history` is an
     **authenticated** endpoint — Binance requires a real API key/secret
-    even for read-only access. Reads `BINANCE_API_KEY` / `BINANCE_API_SECRET`
-    from the env (the same vars the trend-bot daemon and `Secrets` already
-    use); raises a clear `RuntimeError` if missing so the CLI prints "set
-    your keys" rather than a generic AuthenticationError.
+    even for read-only access. Credentials are resolved via the project's
+    `Secrets` config (the same source the trend bot uses), which reads
+    both real env vars AND the `.env` file; a clear `RuntimeError` is
+    raised if neither has them, so the CLI prints "set your keys" rather
+    than an opaque ccxt AuthenticationError.
 
     ccxt's `fetch_borrow_rate_history` returns the rate over a `period`
     (Binance quotes daily, period = 86_400_000 ms). We annualise each
@@ -135,12 +158,9 @@ async def _download_borrow_rate(
     per-8h funding. Binance caps `limit` at 92 (≈3 months of daily
     points), so we paginate by advancing the cursor to the last timestamp
     seen — with a no-forward-progress guard against an infinite loop."""
-    import os
-
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
-    api_key = os.environ.get("BINANCE_API_KEY") or ""
-    api_secret = os.environ.get("BINANCE_API_SECRET") or ""
+    api_key, api_secret = _binance_credentials()
     if not api_key or not api_secret:
         raise RuntimeError(
             "BINANCE_API_KEY / BINANCE_API_SECRET not set — Binance's "
