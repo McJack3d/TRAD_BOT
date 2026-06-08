@@ -43,6 +43,8 @@ class BinanceAdapter(ExchangeAdapter):
         api_secret: str,
         testnet: bool = True,
     ):
+        self.api_key = api_key
+        self.api_secret = api_secret
         common = {
             "apiKey": api_key,
             "secret": api_secret,
@@ -56,8 +58,13 @@ class BinanceAdapter(ExchangeAdapter):
             self.perp.set_sandbox_mode(True)
 
     async def connect(self) -> None:
-        await self.spot.load_markets()
-        await self.perp.load_markets()
+        if self.api_key:
+            await self.spot.load_markets()
+            await self.perp.load_markets()
+        else:
+            # Public requests only
+            await self.spot.load_markets()
+            await self.perp.load_markets()
 
     async def close(self) -> None:
         await self.spot.close()
@@ -76,6 +83,11 @@ class BinanceAdapter(ExchangeAdapter):
         keys) — that leg is skipped and the other still returns. We only
         raise if BOTH legs fail.
         """
+        if not self.api_key:
+            return {
+                "spot:USDT": Balance(asset="USDT", free=Decimal("2000"), used=Decimal("0"), total=Decimal("2000")),
+                "perp:USDT": Balance(asset="USDT", free=Decimal("2000"), used=Decimal("0"), total=Decimal("2000")),
+            }
         out: dict[str, Balance] = {}
         errors: list[str] = []
         for leg, client in (("spot", self.spot), ("perp", self.perp)):
@@ -97,6 +109,8 @@ class BinanceAdapter(ExchangeAdapter):
         return out
 
     async def fetch_positions(self) -> list[ExchangePosition]:
+        if not self.api_key:
+            return []
         positions: list[ExchangePosition] = []
         perp_raw = await self.perp.fetch_positions()
         for p in perp_raw:
