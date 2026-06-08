@@ -565,6 +565,7 @@ def test_main_cli_missing_config_exits() -> None:
     import argparse
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
+         patch("src.strategy.regime_live.run") as mock_run, \
          patch("src.strategy.regime_live.Path") as mock_path, \
          patch("sys.exit") as mock_exit:
         
