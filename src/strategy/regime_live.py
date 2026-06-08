@@ -671,7 +671,7 @@ class RegimeLiveBot:
         out = {}
         for chunk in raw.split("|"):
             if ":" in chunk:
-                k, v = chunk.split(":", 1)
+                k, v = chunk.rsplit(":", 1)
                 out[k] = v
         return out
 

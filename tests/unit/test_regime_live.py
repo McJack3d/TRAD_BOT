@@ -10,6 +10,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 import pandas as pd
 import numpy as np
+from sqlalchemy import select
 
 from src.adapters.fake import FakeExchange
 from src.state.db import Database
@@ -352,7 +353,7 @@ async def test_cooloff_guard(tmp_path: Path, db: Database) -> None:
         status=PositionStatus.CLOSED,
         perp_qty=Decimal("1.0"),
         perp_entry_price=Decimal("60000"),
-        realized_pnl=Decimal("-500"),
+        realized_pnl=Decimal("-5"),
         closed_at=datetime.now(UTC),
     )
     await db.create_position(p_loss)
