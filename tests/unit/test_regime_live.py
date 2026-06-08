@@ -538,3 +538,38 @@ def test_time_until_next_bar_close() -> None:
     # timeframe "15m"
     res = time_until_next_bar_close("15m")
     assert res > 0.0
+
+
+def test_main_cli_argument_parsing() -> None:
+    from src.strategy.regime_live import main
+    import argparse
+    from unittest.mock import patch
+
+    with patch("argparse.ArgumentParser.parse_args") as mock_args, \
+         patch("src.strategy.regime_live.run") as mock_run, \
+         patch("pathlib.Path.exists", return_value=True):
+        
+        mock_args.return_value = argparse.Namespace(
+            config="config/regime_switch.yaml",
+            kill_file="/var/lib/bot/KILL"
+        )
+        main()
+        mock_run.assert_called_once_with("config/regime_switch.yaml", "/var/lib/bot/KILL")
+
+
+def test_main_cli_missing_config_exits() -> None:
+    from src.strategy.regime_live import main
+    from unittest.mock import patch
+    import sys
+
+    with patch("argparse.ArgumentParser.parse_args") as mock_args, \
+         patch("pathlib.Path.exists", return_value=False), \
+         patch("sys.exit") as mock_exit:
+        
+        mock_args.return_value = argparse.Namespace(
+            config="config/non_existent.yaml",
+            kill_file="/var/lib/bot/KILL"
+        )
+        main()
+        mock_exit.assert_called_once_with(2)
+

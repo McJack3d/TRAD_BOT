@@ -24,6 +24,15 @@ from src.state.models import (
     StateSnapshot,
     FundingPayment,
 )
+import argparse
+import signal
+import sys
+from pathlib import Path
+
+from src.adapters.binance import BinanceAdapter
+from src.config import BotConfig, Mode, Secrets
+from src.logging_setup import configure_logging
+
 from src.state.pnl import build_state_snapshot, compute_realized_pnl
 from src.strategy.regime_switch import (
     RegimeSwitchParams,
@@ -771,3 +780,136 @@ class RegimeLiveBot:
             self.notifier(title, message)
         except Exception as e:
             log.warning("regime_live.notify.error", error=str(e))
+
+
+async def run(config_path: str, kill_file: str) -> None:
+    secrets = Secrets()
+    cfg = BotConfig.from_yaml(config_path)
+    configure_logging(secrets.bot_log_level)
+    log.info("regime_bot.starting", mode=cfg.mode.value, config=config_path)
+
+    db = Database(secrets.bot_db_path)
+    await db.init(starting_equity=cfg.starting_equity_usdt)
+
+    exchange = BinanceAdapter(
+        api_key=secrets.binance_api_key,
+        api_secret=secrets.binance_api_secret,
+        testnet=secrets.binance_testnet,
+    )
+    
+    if cfg.mode != Mode.DRY_RUN:
+        await exchange.connect()
+    elif secrets.binance_api_key:
+        try:
+            await exchange.connect()
+        except Exception as e:
+            log.warning("regime_bot.exchange.connect_failed", error=str(e))
+
+    from src.monitoring.email import EmailNotifier
+    from src.monitoring.telegram_bot import TelegramNotifier
+    from src.notify import best_notifier
+
+    telegram = TelegramNotifier(
+        token=secrets.telegram_bot_token,
+        chat_id=secrets.telegram_chat_id,
+        db=db,
+    )
+    email = EmailNotifier(
+        smtp_host=secrets.email_smtp_host,
+        smtp_port=secrets.email_smtp_port,
+        username=secrets.email_username,
+        password=secrets.email_password,
+        from_addr=secrets.email_from,
+        to_addr=secrets.email_to,
+    )
+    local_notify = best_notifier()
+
+    def notify(title: str, body: str) -> None:
+        log.info("bot.notify", title=title, body=body)
+        try:
+            local_notify(title, body)
+        except Exception:
+            pass
+        if cfg.monitoring.telegram_enabled and secrets.telegram_bot_token:
+            try:
+                asyncio.create_task(telegram.send(title, body))
+            except Exception as e:
+                log.warning("bot.notify.telegram_failed", error=str(e))
+        if cfg.monitoring.email_enabled and secrets.email_username:
+            try:
+                asyncio.create_task(email.send(f"[trad-bot-regime] {title}", body))
+            except Exception as e:
+                log.warning("bot.notify.email_failed", error=str(e))
+
+    symbols = [s.perp for s in cfg.symbols]
+    bot = RegimeLiveBot(
+        exchange=exchange,
+        db=db,
+        symbols=symbols,
+        config_path=config_path,
+        notifier=notify,
+        mode=cfg.mode.value,
+    )
+
+    from src.killswitch import KillSwitch
+    killswitch = KillSwitch(
+        db=db,
+        path=kill_file,
+        on_flatten=bot.halt_trading,
+    )
+    await killswitch.start()
+
+    stop_event = asyncio.Event()
+
+    def _signal_handler() -> None:
+        log.info("regime_bot.signal.received")
+        bot.running = False
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _signal_handler)
+        except NotImplementedError:
+            pass  # Windows
+
+    tick_task = asyncio.create_task(bot.run_loop())
+
+    await stop_event.wait()
+    log.info("regime_bot.shutdown.start")
+
+    bot.running = False
+    tick_task.cancel()
+    try:
+        await tick_task
+    except asyncio.CancelledError:
+        pass
+
+    await killswitch.stop()
+    await exchange.close()
+    await db.close()
+    log.info("regime_bot.shutdown.done")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="trad-bot regime-switching long/short perp bot")
+    parser.add_argument("--config", default="config/regime_switch.yaml")
+    parser.add_argument("--kill-file", default="/var/lib/bot/KILL")
+    args = parser.parse_args()
+
+    if not Path(args.config).exists():
+        print(f"config not found: {args.config}", file=sys.stderr)
+        sys.exit(2)
+
+    try:
+        import uvloop  # type: ignore[import-not-found]
+        uvloop.install()
+    except ImportError:
+        pass
+
+    asyncio.run(run(args.config, args.kill_file))
+
+
+if __name__ == "__main__":
+    main()
+

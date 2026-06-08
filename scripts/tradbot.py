@@ -1097,7 +1097,7 @@ async def cmd_menu(args, console: Console) -> int:
             "  [bold]1[/]  Binance trend bot (BTC SMA — daily eval, spot only)\n"
             "  [bold]2[/]  IBKR sentiment bot (FinBERT → LLM funnel, US equities)\n"
             "  [bold]3[/]  Funding-arb daemon (read-only monitor + loss-stops)\n"
-            "  [bold]4[/]  Regime-switch perp bot (backtests — pre-deployment)\n"
+            "  [bold]4[/]  Regime-switch perp bot (live bot operations)\n"
             "  [bold]5[/]  Two-sided funding carry (backtest + gates — pre-deployment)\n"
             "  [bold]0[/]  Quit"
         )
@@ -1242,8 +1242,7 @@ async def _farb_menu(console: Console) -> int:
 
 
 async def _regime_menu(console: Console) -> int:
-    """Submenu for the regime-switch perp bot (backtests only — not
-    deployable until gates pass). Returns -1 to quit, 0 to go back."""
+    """Submenu for the regime-switch perp bot (live operations). Returns -1 to quit, 0 to go back."""
     from scripts.tradbot_regime import menu_items
 
     items = menu_items()
@@ -1256,12 +1255,12 @@ async def _regime_menu(console: Console) -> int:
         console.print(
             Panel(
                 body,
-                title="Regime-switch perp bot · backtests (pre-deployment)",
+                title="Regime-switch perp bot · live operations",
                 expand=False,
             )
         )
         try:
-            choice = console.input("[bold]Choose[/] (0-3, b): ").strip().lower()
+            choice = console.input(f"[bold]Choose[/] (1-{len(items)}, b): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             console.print("\n[dim]Bye.[/]")
             return -1
