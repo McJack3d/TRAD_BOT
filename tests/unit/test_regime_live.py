@@ -561,6 +561,7 @@ def test_main_cli_missing_config_exits() -> None:
     from src.strategy.regime_live import main
     from unittest.mock import patch
     import sys
+    import argparse
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
          patch("pathlib.Path.exists", return_value=False), \
