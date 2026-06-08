@@ -164,3 +164,5 @@ pytest tests/unit/test_ibkr_sentiment_*.py   # IBKR sentiment only
 
 See `deploy/setup.sh` and `deploy/systemd/bot.service`. Target host is
 Hetzner CAX11 (ARM, Singapore) or DO Singapore. Ubuntu 24.04.
+
+Works under construction, MIT license.
