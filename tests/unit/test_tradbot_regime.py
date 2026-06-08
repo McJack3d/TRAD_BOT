@@ -306,7 +306,7 @@ async def test_regime_flatten_live(tmp_path, db, monkeypatch):
     console = Console(file=io.StringIO())
     rc = await tradbot_regime.cmd_regime_flatten(argparse.Namespace(yes=True), console)
     assert rc == 0
-    mock_bot._close_perp.assert_called_once_with("BTC/USDT:USDT", Side.SELL, Decimal("0.1"), p.id)
+    mock_bot._close_perp.assert_called_once_with("BTC/USDT:USDT", "sell", Decimal("0.1"), p.id)
 
     # Check DB closed position
     pos_after = await db.get_position(p.id)

@@ -232,6 +232,7 @@ async def cmd_regime_status(args, console: Console) -> int:
     """Read from config and DB to display a summary of status, positions, realized PnL, headroom, etc."""
     try:
         cfg, db, db_path = await _load()
+        cfg_path, _ = _paths()
     except FileNotFoundError as e:
         console.print(f"[red]✗[/] {e}")
         return 1
