@@ -241,6 +241,14 @@ async def cmd_regime_status(args, console: Console) -> int:
         console.print(f"[yellow]⚠[/] Database not found: {db_path}")
         return 1
 
+    import yaml
+    try:
+        with open(cfg_path) as f:
+            raw_cfg = yaml.safe_load(f) or {}
+        max_losses = raw_cfg.get("risk", {}).get("max_consecutive_losses", 4)
+    except Exception:
+        max_losses = 4
+
     from src.adapters.binance import BinanceAdapter
     from src.config import Secrets
 
@@ -386,7 +394,7 @@ async def cmd_regime_status(args, console: Console) -> int:
         summary_table.add_row("Starting equity", f"${starting:,.2f}")
         summary_table.add_row(
             "Consecutive losses",
-            f"{consecutive_losses} / {cfg.risk.max_consecutive_losses}",
+            f"{consecutive_losses} / {max_losses}",
         )
         summary_table.add_row("Snapshot age", _age(snap.ts if snap else None))
         summary_table.add_row("Daily realized PnL", _pnl_cell(daily_realized))
