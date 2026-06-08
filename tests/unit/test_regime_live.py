@@ -547,8 +547,9 @@ def test_main_cli_argument_parsing() -> None:
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
          patch("src.strategy.regime_live.run") as mock_run, \
-         patch("pathlib.Path.exists", return_value=True):
+         patch("src.strategy.regime_live.Path") as mock_path:
         
+        mock_path.return_value.exists.return_value = True
         mock_args.return_value = argparse.Namespace(
             config="config/regime_switch.yaml",
             kill_file="/var/lib/bot/KILL"
@@ -564,9 +565,10 @@ def test_main_cli_missing_config_exits() -> None:
     import argparse
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
-         patch("pathlib.Path.exists", return_value=False), \
+         patch("src.strategy.regime_live.Path") as mock_path, \
          patch("sys.exit") as mock_exit:
         
+        mock_path.return_value.exists.return_value = False
         mock_args.return_value = argparse.Namespace(
             config="config/non_existent.yaml",
             kill_file="/var/lib/bot/KILL"
