@@ -30,6 +30,8 @@ def _adapter_with(spot_client, perp_client):
     from src.adapters.binance import BinanceAdapter
 
     adapter = BinanceAdapter.__new__(BinanceAdapter)
+    adapter.api_key = "test_api_key"
+    adapter.api_secret = "test_api_secret"
     adapter.spot = spot_client
     adapter.perp = perp_client
     return adapter
