@@ -125,9 +125,9 @@ async def _download_borrow_rate(
     ccxt's `fetch_borrow_rate_history` returns the rate over a `period`
     (Binance quotes daily, period = 86_400_000 ms). We annualise each
     point to APR so the carry math compares it like-for-like against the
-    per-8h funding. The endpoint caps each query at ~30 days, so we
-    paginate by advancing the cursor to the last timestamp seen — with a
-    no-forward-progress guard against an infinite loop."""
+    per-8h funding. Binance caps `limit` at 92 (≈3 months of daily
+    points), so we paginate by advancing the cursor to the last timestamp
+    seen — with a no-forward-progress guard against an infinite loop."""
     import ccxt.async_support as ccxt  # type: ignore[import-untyped]
 
     ex = ccxt.binance({"enableRateLimit": True})
@@ -137,7 +137,7 @@ async def _download_borrow_rate(
         await ex.load_markets()
         while cursor < until_ms:
             batch = await _retry(
-                lambda c=cursor: ex.fetch_borrow_rate_history(asset, since=c, limit=100)
+                lambda c=cursor: ex.fetch_borrow_rate_history(asset, since=c, limit=92)
             )
             if not batch:
                 break
@@ -150,7 +150,7 @@ async def _download_borrow_rate(
             if last + 1 <= cursor:  # no forward progress — stop
                 break
             cursor = last + 1
-            if len(batch) < 100:
+            if len(batch) < 92:
                 break
     finally:
         await ex.close()

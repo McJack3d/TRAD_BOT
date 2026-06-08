@@ -161,6 +161,19 @@ def test_sync_load_borrow_rate_works_standalone(tmp_path):
     assert not s.empty
 
 
+def test_borrow_downloader_pagination_limit_at_or_below_92():
+    """REGRESSION: Binance caps `fetch_borrow_rate_history` limit at 92,
+    not 100. The first attempt at this CLI on the Tokyo box failed with
+    `BadRequest: limit parameter cannot exceed 92`. This test inspects
+    the downloader's source so a future bump back to 100 fails loudly
+    in CI rather than only at runtime on the box."""
+    import inspect
+
+    src = inspect.getsource(histmod._download_borrow_rate)
+    assert "limit=92" in src
+    assert "limit=100" not in src
+
+
 def test_sync_load_ohlcv_works_standalone(tmp_path):
     """The sync wrapper is for standalone scripts — no running loop."""
     df = load_ohlcv("BTC/USDT", "1h", months=1, cache_dir=str(tmp_path))
