@@ -596,7 +596,7 @@ async def cmd_regime_flatten(args, console: Console) -> int:
 
         for pos in open_positions:
             console.print(f"Flattening {pos.symbol}...")
-            close_side = Side.SELL if pos.perp_qty > 0 else Side.BUY
+            close_side = "sell" if pos.perp_qty > 0 else "buy"
             fill = await bot._close_perp(pos.symbol, close_side, abs(pos.perp_qty), pos.id)
             if fill is not None:
                 realized_pnl = Decimal("0")

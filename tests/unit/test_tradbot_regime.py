@@ -135,8 +135,8 @@ async def test_regime_status_live(tmp_path, db, monkeypatch):
     mock_exchange.close = AsyncMock()
     mock_exchange.fetch_ticker = AsyncMock(return_value=ticker_mock)
 
-    with patch("scripts.tradbot_regime.BinanceAdapter", return_value=mock_exchange):
-        console = Console(file=io.StringIO())
+    with patch("src.adapters.binance.BinanceAdapter", return_value=mock_exchange):
+        console = Console(file=io.StringIO(), width=150)
         rc = await tradbot_regime.cmd_regime_status(argparse.Namespace(), console)
         assert rc == 0
         output = console.file.getvalue()
@@ -166,7 +166,7 @@ async def test_regime_positions_live(tmp_path, db, monkeypatch):
         return cfg, db, str(tmp_path / "test.db")
     monkeypatch.setattr(tradbot_regime, "_load", mock_load)
 
-    console = Console(file=io.StringIO())
+    console = Console(file=io.StringIO(), width=150)
     rc = await tradbot_regime.cmd_regime_positions(argparse.Namespace(), console)
     assert rc == 0
     output = console.file.getvalue()
