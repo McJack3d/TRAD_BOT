@@ -1,5 +1,5 @@
 # Configuration for the Regime-Switching Long/Short Perp Daemon
-mode: dry_run
+mode: live
 starting_equity_usdt: 1000
 
 symbols:

@@ -534,6 +534,42 @@ async def test_calendar_does_not_block_exits(tmp_path: Path, db: Database) -> No
     assert await bot.get_active_position("BTC/USDT:USDT") is None
 
 
+@pytest.mark.asyncio
+async def test_live_mode_futures_fallback(tmp_path: Path, db: Database) -> None:
+    bot, ex = await _setup_bot(tmp_path, db)
+    bot.mode = "LIVE"
+    bot.df_override = _ohlc([60000.0] * 205)
+
+    # Force probe to fail by mocking fetch_positions to raise Exception
+    with patch.object(ex, "fetch_positions", side_effect=Exception("API Error: -2015")):
+        await bot.probe_futures_availability()
+
+    assert bot.futures_available is False
+
+    # Mock ENTER_LONG signal
+    signal = SwitchSignal(
+        action=Action.ENTER_LONG,
+        leg=EntryLeg.TREND,
+        reason="test enter long when futures unavailable",
+        stop_price=58000.0,
+    )
+
+    with patch("src.strategy.regime_live.evaluate_live", return_value=signal):
+        await bot.tick()
+
+    # The order should have been simulated successfully and position opened in DB
+    pos = await bot.get_active_position("BTC/USDT:USDT")
+    assert pos is not None
+    assert pos.status == PositionStatus.OPEN
+    assert pos.perp_qty > Decimal("0")
+
+    # Order in DB should be marked FILLED
+    async with db.session() as s:
+        orders = (await s.execute(select(Order))).scalars().all()
+    assert len(orders) == 1
+    assert orders[0].status == OrderStatus.FILLED
+
+
 def test_time_until_next_bar_close() -> None:
     # timeframe "15m"
     res = time_until_next_bar_close("15m")

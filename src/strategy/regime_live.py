@@ -100,6 +100,8 @@ class RegimeLiveBot:
         self.notifier = notifier or noop_notifier
         self.mode = mode.upper()  # DRY_RUN, PAPER, LIVE
         self.running = False
+        self.futures_available = True
+        self._futures_probed = False
 
         # Default parameters
         self.timeframe = "15m"
@@ -208,6 +210,26 @@ class RegimeLiveBot:
                 log.exception("regime_live.halt.close_failed", position_id=pos.id, error=str(e))
         self._notify("Bot Halted", reason)
 
+    async def probe_futures_availability(self) -> None:
+        self._futures_probed = True
+        if self.mode == "DRY_RUN":
+            self.futures_available = False
+            log.info("regime_live.futures_probe.dry_run", futures_available=False)
+            return
+
+        try:
+            await self.exchange.fetch_positions()
+            self.futures_available = True
+            log.info("regime_live.futures_probe.success", futures_available=True)
+        except Exception as e:
+            self.futures_available = False
+            log.warning(
+                "regime_live.futures_probe.failed",
+                error=str(e),
+                msg="Futures API permissions are missing or failed. Falling back to simulated/dry-run order execution.",
+                futures_available=False
+            )
+
     # ---- run / tick loop --------------------------------------------
 
     async def run_loop(self) -> None:
@@ -227,6 +249,9 @@ class RegimeLiveBot:
                 await asyncio.sleep(5)
 
     async def tick(self) -> None:
+        if not getattr(self, "_futures_probed", False):
+            await self.probe_futures_availability()
+
         if await self.is_halted():
             log.info("regime_live.tick.halted")
             return
@@ -239,7 +264,7 @@ class RegimeLiveBot:
 
         # 1. Check account-level risk guards
         daily_realized, cumulative_realized = await compute_realized_pnl(self.db, now_utc)
-        skip_exchange = self.mode == "DRY_RUN"
+        skip_exchange = self.mode == "DRY_RUN" or not self.futures_available
         total_unrealized = await _safe_unrealized(self.exchange, skip=skip_exchange)
 
         daily_stop_check = check_account_daily_stop(
@@ -524,7 +549,7 @@ class RegimeLiveBot:
     # ---- order execution helpers ------------------------------------
 
     async def _open_perp(self, symbol: str, side: Side, qty: Decimal) -> ExchangeOrder | None:
-        if self.mode != "DRY_RUN":
+        if self.mode != "DRY_RUN" and self.futures_available:
             try:
                 await self.exchange.set_leverage(symbol, int(self.max_leverage))
             except Exception as e:
@@ -542,7 +567,7 @@ class RegimeLiveBot:
             )
         )
 
-        if self.mode == "DRY_RUN":
+        if self.mode == "DRY_RUN" or not self.futures_available:
             ticker = await self.exchange.fetch_ticker(symbol, "perp")
             mid = ticker.last or (ticker.bid + ticker.ask) / 2
             slip = mid * self.assumed_slippage_bps / Decimal("10000.0")
@@ -615,7 +640,7 @@ class RegimeLiveBot:
             )
         )
 
-        if self.mode == "DRY_RUN":
+        if self.mode == "DRY_RUN" or not self.futures_available:
             ticker = await self.exchange.fetch_ticker(symbol, "perp")
             mid = ticker.last or (ticker.bid + ticker.ask) / 2
             slip = mid * self.assumed_slippage_bps / Decimal("10000.0")
@@ -753,7 +778,7 @@ class RegimeLiveBot:
             return pos_pnl + funding_pnl
 
     async def _get_asset_unrealized_pnl(self, symbol: str) -> Decimal:
-        if self.mode == "DRY_RUN":
+        if self.mode == "DRY_RUN" or not self.futures_available:
             return Decimal("0")
         try:
             positions = await self.exchange.fetch_positions()
