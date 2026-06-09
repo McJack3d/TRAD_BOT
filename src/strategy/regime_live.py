@@ -234,6 +234,10 @@ class RegimeLiveBot:
 
     async def run_loop(self) -> None:
         self.running = True
+        try:
+            await self.probe_futures_availability()
+        except Exception as e:
+            log.warning("regime_live.run_loop.probe_failed", error=str(e))
         while self.running:
             sleep_seconds = time_until_next_bar_close(self.timeframe)
             log.info("regime_live.sleep", seconds=sleep_seconds)
