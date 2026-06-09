@@ -162,8 +162,14 @@ class _HttpFetcher(Protocol):
 async def _httpx_fetcher(url: str) -> str:
     import httpx
 
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    if "sec.gov" in url:
+        headers["User-Agent"] = "trad-bot research contact@example.com"
+
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(url)
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
         return resp.text
 
