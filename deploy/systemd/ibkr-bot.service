@@ -1,0 +1,33 @@
+[Unit]
+Description=trad-bot IBKR sentiment trading bot
+After=network-online.target chronyd.service
+Wants=network-online.target chronyd.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/TRAD_BOT
+EnvironmentFile=/home/ubuntu/TRAD_BOT/.env
+ExecStart=/home/ubuntu/TRAD_BOT/.venv/bin/python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
+Restart=on-failure
+RestartSec=5s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=trad-bot-ibkr
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/TRAD_BOT/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
