@@ -9,6 +9,7 @@ User=ubuntu
 Group=ubuntu
 WorkingDirectory=/home/ubuntu/TRAD_BOT
 EnvironmentFile=/home/ubuntu/TRAD_BOT/.env
+Environment=HF_HOME=/home/ubuntu/TRAD_BOT/data/.cache
 ExecStart=/home/ubuntu/TRAD_BOT/.venv/bin/python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
 Restart=on-failure
 RestartSec=5s
