@@ -206,8 +206,7 @@ def _dominant_horizon(horizons: list[TimeHorizon]) -> TimeHorizon:
     for h in horizons:
         counts[h] += 1
     # Most common; ties broken by `_HORIZON_ORDER`.
-    most = max(_HORIZON_ORDER, key=lambda h: (counts[h], -_HORIZON_ORDER.index(h)))
-    return most
+    return max(_HORIZON_ORDER, key=lambda h: (counts[h], -_HORIZON_ORDER.index(h)))
 
 
 @dataclass

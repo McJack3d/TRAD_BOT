@@ -147,17 +147,16 @@ def backtest_regime_switch(
                     pos = open_from_signal(sig, pre, i, fill)
                     pos.qty = qty
                     pos.entry_equity = entry_equity
-        else:
-            if sig.action == Action.EXIT:
-                long = pos.side == 1
-                raw = pos.stop_price if sig.exit_at_stop else close
-                exit_fill = raw * (1 - slip) if long else raw * (1 + slip)
-                net = _record_trade(i, exit_fill, sig.reason)
-                equity += net
-                stopped = "stop hit" in sig.reason
-                pos = SwitchPosition.flat()
-                if stopped:
-                    cooloff_until = i + cooloff_bars
+        elif sig.action == Action.EXIT:
+            long = pos.side == 1
+            raw = pos.stop_price if sig.exit_at_stop else close
+            exit_fill = raw * (1 - slip) if long else raw * (1 + slip)
+            net = _record_trade(i, exit_fill, sig.reason)
+            equity += net
+            stopped = "stop hit" in sig.reason
+            pos = SwitchPosition.flat()
+            if stopped:
+                cooloff_until = i + cooloff_bars
 
         # Mark to market for the equity curve.
         if pos.side == 1:

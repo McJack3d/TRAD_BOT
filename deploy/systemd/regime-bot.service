@@ -2,6 +2,10 @@
 Description=trad-bot regime-switching long/short perp bot
 After=network-online.target chronyd.service
 Wants=network-online.target chronyd.service
+# Stop restart-looping after 5 crashes in 5 min — a crash loop on a
+# live trading host must page a human, not keep re-firing orders.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,7 +15,7 @@ WorkingDirectory=/home/ubuntu/TRAD_BOT
 EnvironmentFile=/home/ubuntu/TRAD_BOT/.env
 ExecStart=/home/ubuntu/TRAD_BOT/.venv/bin/python -m src.strategy.regime_live --config config/regime_switch.yaml --kill-file data/KILL
 Restart=on-failure
-RestartSec=5s
+RestartSec=30s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=trad-bot-regime

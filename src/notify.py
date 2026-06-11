@@ -38,7 +38,7 @@ def macos_notifier(title: str, message: str) -> None:
 
 def noop_notifier(title: str, message: str) -> None:
     """Default — used in tests and on non-macOS systems."""
-    return None
+    return
 
 
 def best_notifier() -> Notifier:

@@ -2,55 +2,51 @@
 
 from __future__ import annotations
 
-import asyncio
-import time
-from datetime import datetime, UTC
-from decimal import Decimal
-import pandas as pd
-import numpy as np
-from sqlalchemy import select, update
-
-from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder, Leg, Side
-from src.logging_setup import log
-from src.state.db import Database
-from src.state.models import (
-    Position,
-    PositionStatus,
-    Order,
-    OrderStatus,
-    Fill,
-    SystemStatus,
-    SystemStatusEnum,
-    StateSnapshot,
-    FundingPayment,
-)
 import argparse
+import asyncio
 import signal
 import sys
+import time
+from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
-from src.adapters.binance import BinanceAdapter
-from src.config import BotConfig, Mode, Secrets
-from src.logging_setup import configure_logging
+import numpy as np
+import pandas as pd
+from sqlalchemy import select, update
 
-from src.state.pnl import build_state_snapshot, compute_realized_pnl
-from src.strategy.regime_switch import (
-    RegimeSwitchParams,
-    SwitchPosition,
-    SwitchSignal,
-    Action,
-    EntryLeg,
-    evaluate_live,
-)
+from src.adapters.binance import BinanceAdapter
+from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder, Side
+from src.config import BotConfig, Mode, Secrets
+from src.execution.order import generate_client_order_id, round_qty
+from src.logging_setup import configure_logging, log
 from src.risk.perp_guards import (
+    check_account_cumulative_stop,
+    check_account_daily_stop,
     check_asset_cooloff,
     check_asset_daily_stop,
     check_consecutive_losses,
-    check_account_daily_stop,
-    check_account_cumulative_stop,
 )
-from src.execution.order import generate_client_order_id, round_qty
-
+from src.state.db import Database
+from src.state.models import (
+    Fill,
+    FundingPayment,
+    Order,
+    OrderStatus,
+    Position,
+    PositionStatus,
+    StateSnapshot,
+    SystemStatus,
+    SystemStatusEnum,
+)
+from src.state.pnl import build_state_snapshot, compute_realized_pnl
+from src.strategy.regime_switch import (
+    Action,
+    EntryLeg,
+    RegimeSwitchParams,
+    SwitchPosition,
+    evaluate_live,
+)
 
 
 def time_until_next_bar_close(timeframe: str) -> float:
@@ -434,7 +430,7 @@ class RegimeLiveBot:
         if sig.action == Action.HOLD:
             return
 
-        elif sig.action == Action.EXIT:
+        if sig.action == Action.EXIT:
             if db_pos is not None:
                 close_side = "sell" if pos.side == 1 else "buy"
                 fill = await self._close_perp(symbol, close_side, Decimal(str(pos.qty)), db_pos.id)
@@ -449,7 +445,7 @@ class RegimeLiveBot:
                     self._notify(f"{symbol} Exit", sig.reason)
             return
 
-        elif sig.action in (Action.ENTER_LONG, Action.ENTER_SHORT):
+        if sig.action in (Action.ENTER_LONG, Action.ENTER_SHORT):
             if self.is_entry_blocked_by_calendar(now_utc):
                 log.info("regime_live.entry_blocked.calendar", symbol=symbol)
                 return
@@ -517,8 +513,7 @@ class RegimeLiveBot:
                 min_qty = symbol_cfg.min_qty
 
             max_qty = (equity * self.max_leverage) / current_price
-            if qty > max_qty:
-                qty = max_qty
+            qty = min(qty, max_qty)
 
             qty_rounded = round_qty(qty, qty_step)
             if qty_rounded < min_qty:
@@ -741,7 +736,7 @@ class RegimeLiveBot:
     def _get_symbol_config(self, symbol: str):
         if self.symbol_configs:
             for s in self.symbol_configs:
-                if s.perp == symbol or s.spot == symbol:
+                if symbol in (s.perp, s.spot):
                     return s
         return None
 
@@ -842,7 +837,7 @@ async def run(config_path: str, kill_file: str) -> None:
         api_secret=secrets.binance_api_secret,
         testnet=secrets.binance_testnet,
     )
-    
+
     if cfg.mode != Mode.DRY_RUN:
         await exchange.connect()
     elif secrets.binance_api_key:

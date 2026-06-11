@@ -117,9 +117,11 @@ class Reconciler:
 
         all_symbols = set(db_perp_by_symbol) | set(ex_perp_by_symbol)
         for sym in all_symbols:
-            db_qty = abs(db_perp_by_symbol.get(sym, Decimal("0")))
-            ex_qty = abs(ex_perp_by_symbol.get(sym, Decimal("0")))
-            denom = max(db_qty, ex_qty, Decimal("1e-12"))
+            # Compare signed quantities: a long/short flip of equal size is
+            # maximal drift, not zero drift.
+            db_qty = db_perp_by_symbol.get(sym, Decimal("0"))
+            ex_qty = ex_perp_by_symbol.get(sym, Decimal("0"))
+            denom = max(abs(db_qty), abs(ex_qty), Decimal("1e-12"))
             rel_diff = abs(db_qty - ex_qty) / denom
             if rel_diff > self.cfg.position_size_tolerance_pct:
                 drifts.append(
@@ -129,7 +131,7 @@ class Reconciler:
 
         # Balance check: USDT total across spot and perp accounts.
         usdt_total = Decimal("0")
-        for key, bal in ex_balances.items():
+        for bal in ex_balances.values():
             if bal.asset == "USDT":
                 usdt_total += bal.total
 

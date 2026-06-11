@@ -191,9 +191,9 @@ class FakeExchange(ExchangeAdapter):
         if pos is None:
             return
         if ":" in symbol:
-            margin_asset = symbol.split(":")[-1]
+            margin_asset = symbol.rsplit(":", maxsplit=1)[-1]
         else:
-            margin_asset = symbol.split("/")[-1]
+            margin_asset = symbol.rsplit("/", maxsplit=1)[-1]
         self._positions[symbol] = ExchangePosition(
             symbol=pos.symbol,
             leg=pos.leg,
@@ -236,9 +236,9 @@ class FakeExchange(ExchangeAdapter):
         # "BTC/USDT:USDT" — the part after the colon is the margin asset.
         # Fall back to the quote currency if no colon present.
         if ":" in symbol:
-            margin_asset = symbol.split(":")[-1]
+            margin_asset = symbol.rsplit(":", maxsplit=1)[-1]
         else:
-            margin_asset = symbol.split("/")[-1]
+            margin_asset = symbol.rsplit("/", maxsplit=1)[-1]
         pos = self._positions.get(symbol)
         signed = qty if side == "buy" else -qty
         if pos is None:

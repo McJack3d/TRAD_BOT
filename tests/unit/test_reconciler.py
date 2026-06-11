@@ -115,3 +115,16 @@ def test_sign_difference_treated_via_abs() -> None:
         _bal("USDT", Decimal("1000")),
     )
     assert drifts == []
+
+
+def test_long_short_flip_is_drift() -> None:
+    """A perp position flipped from short to long with the same size must
+    register as maximal drift, not zero — abs() comparison used to hide it."""
+    r = _reconciler()
+    drifts = r.diff(
+        [_db_pos("BTC/USDT", Decimal("-0.5"))],
+        [_ex_perp("BTC/USDT", Decimal("0.5"))],
+        _bal("USDT", Decimal("1000")),
+    )
+    assert len(drifts) == 1
+    assert "BEYOND_TOLERANCE" in drifts[0]

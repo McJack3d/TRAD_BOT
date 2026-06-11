@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import logging
-from decimal import Decimal
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from decimal import Decimal
 from typing import Any
+
 from pydantic import BaseModel, Field
 
 from src.risk.checks import CheckResult
-from src.state.models import SystemStatusEnum
 from src.state.db import Database
+from src.state.models import SystemStatusEnum
 
 logger = logging.getLogger(__name__)
 

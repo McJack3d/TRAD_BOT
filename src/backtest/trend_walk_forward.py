@@ -112,7 +112,6 @@ def walk_forward_trend(
         train_end = cur + timedelta(days=train_days)
         test_end = train_end + timedelta(days=test_days)
         train_closes = closes.loc[cur:train_end]
-        test_closes = closes.loc[train_end:test_end]
 
         # Grid search on the train window for best Sharpe — but only among
         # parameter sets that actually traded. A no-trade run has zero

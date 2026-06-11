@@ -32,7 +32,6 @@ from src.backtest.bb_squeeze_backtest import backtest_bb_squeeze, summarize
 from src.logging_setup import configure_logging
 from src.strategy.bb_squeeze import SqueezeParams
 
-
 _TIMEFRAME_MS = {
     "1m": 60_000,
     "3m": 180_000,

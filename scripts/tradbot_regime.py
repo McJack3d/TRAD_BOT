@@ -17,7 +17,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.adapters.exchange_base import ExchangeAdapter, Side
+from src.adapters.exchange_base import ExchangeAdapter
 from src.state.db import Database
 from src.state.models import (
     Position,
@@ -281,19 +281,18 @@ async def cmd_regime_status(args, console: Console) -> int:
             console.print(
                 Panel("[bold yellow]⏸ PAUSED[/]", border_style="yellow", expand=False)
             )
+        elif enabled:
+            console.print(
+                Panel("[bold green]● ACTIVE[/]", border_style="green", expand=False)
+            )
         else:
-            if enabled:
-                console.print(
-                    Panel("[bold green]● ACTIVE[/]", border_style="green", expand=False)
+            console.print(
+                Panel(
+                    "[bold yellow]⏸ DISABLED[/]",
+                    border_style="yellow",
+                    expand=False,
                 )
-            else:
-                console.print(
-                    Panel(
-                        "[bold yellow]⏸ DISABLED[/]",
-                        border_style="yellow",
-                        expand=False,
-                    )
-                )
+            )
 
         starting = status.starting_equity or cfg.starting_equity_usdt
 

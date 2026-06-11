@@ -256,7 +256,7 @@ def _eval_state_machine(
         return SqueezeSignal(
             action=SqueezeAction.HOLD,
             state_after=SqueezeState.FLAT,
-            reason=f"setup seen but trend filter rejected (trend down)",
+            reason="setup seen but trend filter rejected (trend down)",
             **base,
         )
     return SqueezeSignal(

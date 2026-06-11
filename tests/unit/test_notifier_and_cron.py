@@ -11,7 +11,6 @@ from src.simple_bot import SimpleBot
 from src.state.db import Database
 from src.strategy.sma_trend import TrendState
 
-
 # ---- notifier hook --------------------------------------------------
 
 

@@ -9,7 +9,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Union
 
 from src.config import StrategyConfig
 
@@ -32,7 +31,7 @@ class HoldSignal:
     symbol: str
 
 
-Signal = Union[EntrySignal, ExitSignal, HoldSignal]
+Signal = EntrySignal | ExitSignal | HoldSignal
 
 
 @dataclass(slots=True)

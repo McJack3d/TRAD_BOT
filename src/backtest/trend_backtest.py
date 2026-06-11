@@ -141,8 +141,7 @@ def backtest_sma_trend(
         # Track peak for trailing stop and check stop condition first.
         if position == TrendState.IN and trading_active:
             assert peak_since_entry is not None
-            if close > peak_since_entry:
-                peak_since_entry = close
+            peak_since_entry = max(peak_since_entry, close)
             if trailing_stop_pct > 0:
                 trigger = peak_since_entry * (Decimal("1") - Decimal(str(trailing_stop_pct)))
                 if close <= trigger:
