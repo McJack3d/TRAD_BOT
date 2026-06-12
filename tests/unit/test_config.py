@@ -5,12 +5,13 @@ from __future__ import annotations
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from src.config import BotConfig, StrategyConfig
 
 
 def test_strategy_threshold_must_be_positive() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         StrategyConfig(entry_funding_threshold=Decimal("-0.001"))
 
 

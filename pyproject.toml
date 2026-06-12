@@ -87,10 +87,34 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "S", "RET", "SIM", "PL"]
-ignore = ["E501", "S101", "PLR0913", "PLR2004"]
+ignore = [
+    "E501",     # line length — handled by formatter/judgment
+    "S101",     # assert — used deliberately outside tests too
+    "PLR0913",  # too many arguments
+    "PLR2004",  # magic values
+    "PLR0911",  # too many returns — CLI/strategy dispatch functions
+    "PLR0912",  # too many branches
+    "PLR0915",  # too many statements
+    "PLC0415",  # import-outside-top-level — deliberate lazy imports for optional deps
+    "UP042",    # str-Enum → StrEnum changes str() semantics; not worth the risk
+    "SIM105",   # try/except/pass vs contextlib.suppress — stylistic
+    "SIM108",   # ternary vs if/else — stylistic
+    "S110",     # try-except-pass — deliberate best-effort cleanup paths
+    "S112",     # try-except-continue — deliberate in poll loops
+    "ASYNC230", # blocking open() in async — CLI/setup paths, not hot loops
+    "ASYNC240", # blocking Path methods in async — same
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["S", "PLR"]
+"tests/*" = ["S", "PLR", "E402", "F401"]
+# Scripts configure sys.path / dotenv / warnings before importing src.
+"scripts/*" = ["E402"]
+"src/app/streamlit_app.py" = ["E402"]
+# Launchers intentionally shell out (open Terminal.app, osascript, etc.).
+"src/macos_app.py" = ["S603", "S607"]
+"src/scheduler.py" = ["S603", "S607"]
+"src/notify.py" = ["S603", "S607"]
+"scripts/tradbot.py" = ["S603", "S607"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

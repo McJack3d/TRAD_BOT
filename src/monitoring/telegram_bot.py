@@ -20,6 +20,25 @@ from src.state.models import SystemStatusEnum
 FlattenCallback = Callable[[str], Awaitable[None]]
 
 
+def _safe(handler):  # noqa: ANN001, ANN202
+    """Wrap a command handler so an exception can't kill the polling loop.
+
+    The Telegram bot is the emergency control channel — a crashed /kill
+    handler must still report the failure to the operator."""
+
+    async def wrapped(update, context):  # noqa: ANN001
+        try:
+            await handler(update, context)
+        except Exception as e:
+            log.exception("telegram.handler.error", error=str(e))
+            try:
+                await update.message.reply_text(f"⚠ command failed: {e}")
+            except Exception:
+                log.warning("telegram.handler.error_reply_failed")
+
+    return wrapped
+
+
 class TelegramNotifier:
     def __init__(
         self,
@@ -52,12 +71,12 @@ class TelegramNotifier:
         from telegram.ext import Application, CommandHandler
 
         self._app = Application.builder().token(self.token).build()
-        self._app.add_handler(CommandHandler("status", self._cmd_status))
-        self._app.add_handler(CommandHandler("positions", self._cmd_positions))
-        self._app.add_handler(CommandHandler("funding", self._cmd_funding))
-        self._app.add_handler(CommandHandler("halt", self._cmd_halt))
-        self._app.add_handler(CommandHandler("kill", self._cmd_kill))
-        self._app.add_handler(CommandHandler("resume", self._cmd_resume))
+        self._app.add_handler(CommandHandler("status", _safe(self._cmd_status)))
+        self._app.add_handler(CommandHandler("positions", _safe(self._cmd_positions)))
+        self._app.add_handler(CommandHandler("funding", _safe(self._cmd_funding)))
+        self._app.add_handler(CommandHandler("halt", _safe(self._cmd_halt)))
+        self._app.add_handler(CommandHandler("kill", _safe(self._cmd_kill)))
+        self._app.add_handler(CommandHandler("resume", _safe(self._cmd_resume)))
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling()
@@ -127,10 +146,24 @@ class TelegramNotifier:
         await update.message.reply_text("System PAUSED. No new orders. /resume to revert.")
 
     async def _cmd_kill(self, update, context) -> None:  # noqa: ANN001
+        # Halt first so no new orders go out even if the flatten below fails.
         await self.db.set_status(SystemStatusEnum.HALTED, reason="manual /kill")
+        flatten_error: Exception | None = None
         if self.on_flatten:
-            await self.on_flatten("manual /kill")
-        await update.message.reply_text("KILL: flattening all + HALT. /resume requires confirmation.")
+            try:
+                await self.on_flatten("manual /kill")
+            except Exception as e:
+                flatten_error = e
+                log.exception("telegram.kill.flatten_failed", error=str(e))
+        if flatten_error is not None:
+            await update.message.reply_text(
+                f"KILL: system HALTED but flatten FAILED: {flatten_error}. "
+                "Check positions on the exchange manually."
+            )
+        else:
+            await update.message.reply_text(
+                "KILL: flattening all + HALT. /resume requires confirmation."
+            )
 
     async def _cmd_resume(self, update, context) -> None:  # noqa: ANN001
         args = context.args if hasattr(context, "args") else []

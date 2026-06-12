@@ -2,6 +2,10 @@
 Description=trad-bot funding-rate arbitrage
 After=network-online.target chronyd.service
 Wants=network-online.target chronyd.service
+# Stop restart-looping after 5 crashes in 5 min — a crash loop on a
+# live trading host must page a human, not keep re-firing orders.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -11,7 +15,7 @@ WorkingDirectory=/opt/trad-bot
 EnvironmentFile=/opt/trad-bot/.env
 ExecStart=/opt/trad-bot/.venv/bin/python -m src.main --config /opt/trad-bot/config/live.yaml
 Restart=on-failure
-RestartSec=5s
+RestartSec=30s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=trad-bot

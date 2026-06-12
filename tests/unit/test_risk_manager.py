@@ -374,7 +374,7 @@ def test_40_paused_status_blocks_even_with_pristine_ctx(risk_cfg: RiskConfig) ->
 def test_99_adversarial_count_meets_spec(dummy: int) -> None:
     import inspect
 
-    from tests.unit import test_risk_manager
+    from tests.unit import test_risk_manager  # noqa: PLW0406 — introspects its own module
 
     test_funcs = [
         name

@@ -58,8 +58,7 @@ def rsi(closes: pd.Series, window: int = 14) -> pd.Series:
     out = 100.0 - (100.0 / (1.0 + rs))
     # When avg_loss is 0 the result is undefined; conventionally 100
     # (no losses → max momentum). When both are 0 (flatline) NaN is fine.
-    out = out.where(~(avg_loss == 0) | (avg_gain == 0), 100.0)
-    return out
+    return out.where(~(avg_loss == 0) | (avg_gain == 0), 100.0)
 
 
 @dataclass(slots=True)
@@ -99,7 +98,7 @@ def _wilder(series: pd.Series, window: int) -> pd.Series:
 def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
     """Wilder's True Range: max of (H-L, |H-Cprev|, |L-Cprev|)."""
     prev_close = close.shift(1)
-    tr = pd.concat(
+    return pd.concat(
         [
             (high - low),
             (high - prev_close).abs(),
@@ -107,7 +106,6 @@ def true_range(high: pd.Series, low: pd.Series, close: pd.Series) -> pd.Series:
         ],
         axis=1,
     ).max(axis=1)
-    return tr
 
 
 def atr(

@@ -2,24 +2,25 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from decimal import Decimal
-from datetime import datetime, UTC
+
 import pytest
 from pydantic import ValidationError
 
-from src.state.models import SystemStatusEnum
-from src.state.db import Database
 from src.risk.perp_guards import (
     PerpRiskConfig,
     PerpRiskParams,
     _get_field,
+    check_account_cumulative_stop,
+    check_account_daily_stop,
+    check_and_apply_consecutive_losses,
     check_asset_cooloff,
     check_asset_daily_stop,
     check_consecutive_losses,
-    check_and_apply_consecutive_losses,
-    check_account_daily_stop,
-    check_account_cumulative_stop,
 )
+from src.state.db import Database
+from src.state.models import SystemStatusEnum
 
 
 def test_perp_risk_config_defaults() -> None:
@@ -145,14 +146,8 @@ def test_check_asset_cooloff_sorting_by_bar_index() -> None:
 def test_check_asset_cooloff_sorting_by_timestamp() -> None:
     t1 = datetime(2026, 6, 8, 10, 0, tzinfo=UTC)
     t2 = datetime(2026, 6, 8, 11, 0, tzinfo=UTC)
-    trades = [
-        {"symbol": "BTC/USDT", "net_pnl": Decimal("10"), "exit_ts": t2},
-        {"symbol": "BTC/USDT", "net_pnl": Decimal("-5"), "exit_ts": t1},
-    ]
-    # Sorting by timestamp should put t2 (profit) as last trade.
-    # Note that we didn't specify exit_bar_index, so it falls back to timestamp but doesn't have bar index.
-    # But wait, if exit_bar is None, check_asset_cooloff returns pass_().
-    # Let's specify exit_bar_index as well to test sorting fallback works.
+    # Sorting by timestamp should put t2 (profit) as last trade. exit_bar_index
+    # is required — trades without it make check_asset_cooloff pass trivially.
     trades_with_bar = [
         {"symbol": "BTC/USDT", "net_pnl": Decimal("10"), "exit_ts": t2, "exit_bar_index": 95},
         {"symbol": "BTC/USDT", "net_pnl": Decimal("-5"), "exit_ts": t1, "exit_bar_index": 90},

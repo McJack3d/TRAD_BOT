@@ -46,6 +46,9 @@ class Reconciler:
         # diff function compares apples-to-apples regardless of venue naming.
         self.perp_to_spot = perp_to_spot or {}
         self._task: asyncio.Task | None = None
+        # USDT total at the previous reconciliation; the spec bounds the
+        # drift between consecutive runs rather than reconstructing equity.
+        self._last_usdt_total: Decimal | None = None
 
     async def start(self) -> None:
         if self._task is None or self._task.done():
@@ -76,6 +79,7 @@ class Reconciler:
         ex_balances = await self.exchange.fetch_balances()
 
         drifts = self.diff(db_positions, ex_positions, ex_balances)
+        drifts += await self._check_balance_drift(ex_balances)
         ok = len(drifts) == 0
 
         if ok:
@@ -117,9 +121,11 @@ class Reconciler:
 
         all_symbols = set(db_perp_by_symbol) | set(ex_perp_by_symbol)
         for sym in all_symbols:
-            db_qty = abs(db_perp_by_symbol.get(sym, Decimal("0")))
-            ex_qty = abs(ex_perp_by_symbol.get(sym, Decimal("0")))
-            denom = max(db_qty, ex_qty, Decimal("1e-12"))
+            # Compare signed quantities: a long/short flip of equal size is
+            # maximal drift, not zero drift.
+            db_qty = db_perp_by_symbol.get(sym, Decimal("0"))
+            ex_qty = ex_perp_by_symbol.get(sym, Decimal("0"))
+            denom = max(abs(db_qty), abs(ex_qty), Decimal("1e-12"))
             rel_diff = abs(db_qty - ex_qty) / denom
             if rel_diff > self.cfg.position_size_tolerance_pct:
                 drifts.append(
@@ -127,19 +133,41 @@ class Reconciler:
                     f"rel_diff={rel_diff}"
                 )
 
-        # Balance check: USDT total across spot and perp accounts.
+        return drifts
+
+    async def _check_balance_drift(self, ex_balances: dict) -> list[str]:
+        """Bound the USDT change between consecutive reconciliations.
+
+        We can't reconstruct expected USDT from the DB without full PnL
+        accounting, so per the spec we bound the drift between runs
+        instead. A drop beyond `balance_tolerance_usdt` with recent order
+        activity is expected (fills, fees, funding) and only logged; the
+        same drop with NO recent orders has no legitimate explanation
+        (withdrawal, liquidation, external trading) and halts.
+        """
         usdt_total = Decimal("0")
-        for key, bal in ex_balances.items():
+        for bal in ex_balances.values():
             if bal.asset == "USDT":
                 usdt_total += bal.total
 
-        # We can't reconstruct expected USDT from the DB precisely without
-        # full PnL accounting; the spec accepts the tolerance bound on the
-        # absolute drift between consecutive reconciliations rather than a
-        # full reconstruction. Here we expose the snapshot and warn only.
-        log.debug("reconciler.usdt_total", value=str(usdt_total))
-
-        return drifts
+        prev, self._last_usdt_total = self._last_usdt_total, usdt_total
+        if prev is None:
+            return []
+        drop = prev - usdt_total
+        if drop <= self.cfg.balance_tolerance_usdt:
+            return []
+        recent_orders = await self.db.order_count_in_window(self.cfg.interval_seconds * 2)
+        if recent_orders > 0:
+            log.warning(
+                "reconciler.balance_drop.with_activity",
+                drop=str(drop),
+                recent_orders=recent_orders,
+            )
+            return []
+        return [
+            f"BEYOND_TOLERANCE USDT balance dropped {drop} "
+            f"(prev={prev} now={usdt_total}) with no order activity"
+        ]
 
 
 async def _noop_notify(_title: str, _body: str) -> None:

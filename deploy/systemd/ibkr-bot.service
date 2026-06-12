@@ -2,6 +2,10 @@
 Description=trad-bot IBKR sentiment trading bot
 After=network-online.target chronyd.service
 Wants=network-online.target chronyd.service
+# Stop restart-looping after 5 crashes in 5 min — a crash loop on a
+# live trading host must page a human, not keep re-firing orders.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -12,7 +16,7 @@ EnvironmentFile=/home/ubuntu/TRAD_BOT/.env
 Environment=HF_HOME=/home/ubuntu/TRAD_BOT/data/.cache
 ExecStart=/home/ubuntu/TRAD_BOT/.venv/bin/python -m scripts.run_ibkr_sentiment --config config/ibkr_sentiment.yaml
 Restart=on-failure
-RestartSec=5s
+RestartSec=30s
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=trad-bot-ibkr

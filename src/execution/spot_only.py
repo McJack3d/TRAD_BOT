@@ -8,6 +8,7 @@ backing exchange (`FakeExchange` ↔ Binance) is one line.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -16,6 +17,32 @@ from src.execution.order import generate_client_order_id, round_qty
 from src.logging_setup import log
 from src.state.db import Database
 from src.state.models import Fill, Leg, Order, OrderStatus, Side
+
+
+class _Unknown:
+    """Sentinel: submit failed AND the recovery fetches failed."""
+
+
+async def _recover_order_state(
+    exchange: ExchangeAdapter, client_id: str, symbol: str, attempts: int = 3
+) -> ExchangeOrder | _Unknown | None:
+    """Determine whether a failed submit actually landed.
+
+    Returns the exchange's view of the order, None if it confirms the
+    order never landed, or `_Unknown` if the exchange stayed unreachable.
+    """
+    for attempt in range(1, attempts + 1):
+        await asyncio.sleep(float(attempt))
+        try:
+            return await exchange.fetch_order(client_id, symbol, "spot")
+        except Exception as e:
+            log.warning(
+                "trend.recover_order.fetch_failed",
+                symbol=symbol,
+                attempt=attempt,
+                error=str(e),
+            )
+    return _Unknown()
 
 # Keep a small buffer so the order never tries to spend more than we have
 # after exchange-side rounding and fee debit.
@@ -103,7 +130,19 @@ async def _submit_and_record(
         )
     except Exception as e:
         log.exception("trend.submit.failed", symbol=symbol, side=side.value, error=str(e))
-        await db.update_order_status(client_id, OrderStatus.REJECTED)
+        # The submit error was likely network — the order may have landed.
+        # Ask the exchange before recording an outcome; marking a live
+        # order REJECTED would desync the trade log from real balances.
+        result = await _recover_order_state(exchange, client_id, symbol)
+        if result is None:
+            await db.update_order_status(client_id, OrderStatus.REJECTED)
+            return None
+
+    if isinstance(result, _Unknown):
+        # Exchange unreachable — the order's fate is unknowable right now.
+        # Record UNKNOWN (not REJECTED) so the operator and the next
+        # evaluation know the trade log may lag real balances.
+        await db.update_order_status(client_id, OrderStatus.UNKNOWN)
         return None
 
     await db.update_order_status(

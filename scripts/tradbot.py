@@ -26,6 +26,10 @@ import sys
 import warnings
 from decimal import Decimal
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.adapters.exchange_base import ExchangeAdapter
 
 # Silence aiohttp's "Unclosed client session" warning, which fires when
 # ccxt fails to reach Binance — the session is created during the failed
@@ -97,7 +101,7 @@ async def make_db_only() -> Database:
     return db
 
 
-async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:  # type: ignore[name-defined]
+async def make_bot() -> tuple[SimpleBot, ExchangeAdapter, Database]:
     db = await make_db_only()
 
     if LIVE:
@@ -840,15 +844,12 @@ async def cmd_ai_sentiment_log(args, console: Console) -> int:
 
 async def cmd_config(args, console: Console) -> int:
     """Print the resolved config and where it comes from."""
-
-
-async def cmd_config(args, console: Console) -> int:
-    """Print the resolved config and where it comes from."""
     table = Table(title="trad-bot config", expand=False)
     table.add_column("setting")
     table.add_column("value")
     table.add_column("source")
-    env_or_default = lambda name, default: ("env" if name in os.environ else "default")
+    def env_or_default(name, default):
+        return "env" if name in os.environ else "default"
     table.add_row("Symbol", SYMBOL, env_or_default("SIMPLE_BOT_SYMBOL", "BTC/USDT"))
     table.add_row("Mode", "LIVE" if LIVE else "PAPER", env_or_default("SIMPLE_BOT_LIVE", "false"))
     table.add_row("Starting balance", f"${STARTING_USDT}", env_or_default("SIMPLE_BOT_STARTING_USDT", "1000"))
@@ -912,7 +913,7 @@ async def cmd_watch(args, console: Console) -> int:
                 table.add_row("Trading", "[green]ON[/]" if s.enabled else "[yellow]OFF[/]")
                 table.add_row(
                     "Position",
-                    f"[cyan]IN[/]" if s.current_state == TrendState.IN else "[dim]OUT[/]",
+                    "[cyan]IN[/]" if s.current_state == TrendState.IN else "[dim]OUT[/]",
                 )
                 if s.last_price:
                     table.add_row(f"{s.base_asset} price", f"${s.last_price:,.2f}")
@@ -1007,10 +1008,8 @@ async def cmd_cron_status(args, console: Console) -> int:
     table.add_column("field")
     table.add_column("value")
     for k, v in s.items():
-        if k == "installed":
-            v = "[green]yes[/]" if v else "[red]no[/]"
-        elif k == "loaded":
-            v = "[green]yes[/]" if v else "[red]no[/]"
+        if k in ("installed", "loaded"):
+            v = "[green]yes[/]" if v else "[red]no[/]"  # noqa: PLW2901
         table.add_row(k, str(v))
     console.print(table)
     return 0

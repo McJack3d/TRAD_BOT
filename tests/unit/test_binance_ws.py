@@ -5,8 +5,8 @@ from __future__ import annotations
 from decimal import Decimal
 
 from src.adapters.fake import FakeExchange
-from src.data.market_data import MarketData
 from src.data.binance_ws import BinanceWebSocket
+from src.data.market_data import MarketData
 
 
 def _ws() -> tuple[BinanceWebSocket, MarketData]:

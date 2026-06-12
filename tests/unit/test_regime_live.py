@@ -3,37 +3,38 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, UTC, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch, MagicMock
-import pytest
-import pandas as pd
+from unittest.mock import MagicMock, patch
+
 import numpy as np
+import pandas as pd
+import pytest
 from sqlalchemy import select
 
+from src.adapters.exchange_base import Side
 from src.adapters.fake import FakeExchange
 from src.state.db import Database
 from src.state.models import (
-    Position,
-    PositionStatus,
+    Fill,
+    FundingPayment,
     Order,
     OrderStatus,
-    Fill,
+    Position,
+    PositionStatus,
+    StateSnapshot,
     SystemStatus,
     SystemStatusEnum,
-    StateSnapshot,
-    FundingPayment,
 )
 from src.strategy.regime_live import RegimeLiveBot, time_until_next_bar_close
 from src.strategy.regime_switch import (
+    Action,
+    EntryLeg,
     RegimeSwitchParams,
     SwitchPosition,
     SwitchSignal,
-    Action,
-    EntryLeg,
 )
-from src.adapters.exchange_base import Side
 
 
 def _ohlc(close: list[float]) -> pd.DataFrame:
@@ -577,14 +578,15 @@ def test_time_until_next_bar_close() -> None:
 
 
 def test_main_cli_argument_parsing() -> None:
-    from src.strategy.regime_live import main
     import argparse
     from unittest.mock import patch
+
+    from src.strategy.regime_live import main
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
          patch("src.strategy.regime_live.run") as mock_run, \
          patch("src.strategy.regime_live.Path") as mock_path:
-        
+
         mock_path.return_value.exists.return_value = True
         mock_args.return_value = argparse.Namespace(
             config="config/regime_switch.yaml",
@@ -595,16 +597,17 @@ def test_main_cli_argument_parsing() -> None:
 
 
 def test_main_cli_missing_config_exits() -> None:
-    from src.strategy.regime_live import main
-    from unittest.mock import patch
-    import sys
     import argparse
+    import sys
+    from unittest.mock import patch
+
+    from src.strategy.regime_live import main
 
     with patch("argparse.ArgumentParser.parse_args") as mock_args, \
-         patch("src.strategy.regime_live.run") as mock_run, \
+         patch("src.strategy.regime_live.run"), \
          patch("src.strategy.regime_live.Path") as mock_path, \
          patch("sys.exit") as mock_exit:
-        
+
         mock_path.return_value.exists.return_value = False
         mock_args.return_value = argparse.Namespace(
             config="config/non_existent.yaml",

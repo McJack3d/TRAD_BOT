@@ -62,7 +62,8 @@ async def _fetch_daily(symbol: str, years: int) -> pd.Series:
 
 
 # Keep the old name for backwards-compat with the Streamlit app.
-_fetch_btc_daily = lambda years, symbol="BTC/USDT": _fetch_daily(symbol, years)
+def _fetch_btc_daily(years, symbol="BTC/USDT"):
+    return _fetch_daily(symbol, years)
 
 
 async def _fetch_all(symbols: list[str], years: int) -> dict[str, pd.Series]:

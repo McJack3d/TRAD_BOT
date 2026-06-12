@@ -156,6 +156,32 @@ class Database:
             )
             await s.commit()
 
+    async def assign_orders_to_position(
+        self, client_order_ids: list[str], position_id: int
+    ) -> None:
+        """Link executed orders to their position so fees and fills can be
+        attributed when the position is closed."""
+        if not client_order_ids:
+            return
+        async with self._session() as s:
+            await s.execute(
+                update(Order)
+                .where(Order.client_order_id.in_(client_order_ids))
+                .values(position_id=position_id)
+            )
+            await s.commit()
+
+    async def position_fees(self, position_id: int, fee_asset: str = "USDT") -> Decimal:
+        """Total fees paid (in `fee_asset`) across all fills of all orders
+        linked to a position. Fees charged in other assets are excluded."""
+        async with self._session() as s:
+            res = await s.execute(
+                select(Fill.fee)
+                .join(Order, Fill.order_id == Order.id)
+                .where(Order.position_id == position_id, Fill.fee_asset == fee_asset)
+            )
+            return sum((row[0] for row in res.all()), start=Decimal("0"))
+
     async def get_order_by_client_id(self, client_order_id: str) -> Order | None:
         async with self._session() as s:
             res = await s.execute(

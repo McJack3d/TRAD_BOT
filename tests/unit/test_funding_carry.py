@@ -26,7 +26,6 @@ from src.strategy.funding_carry import (
     net_carry_positive,
 )
 
-
 NOW = datetime(2026, 6, 7, 12, 0, tzinfo=UTC)
 
 

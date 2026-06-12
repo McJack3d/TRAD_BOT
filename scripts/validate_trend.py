@@ -27,11 +27,11 @@ from decimal import Decimal
 from rich.console import Console
 from rich.table import Table
 
+from scripts.backtest_trend import _fetch_daily
 from src.backtest.trend_backtest import backtest_sma_trend
 from src.backtest.trend_metrics import compute_full_metrics
 from src.backtest.trend_walk_forward import oos_split, walk_forward_trend
 from src.logging_setup import configure_logging
-from scripts.backtest_trend import _fetch_daily
 
 
 def _print_metrics(console: Console, title: str, m, equity: float) -> None:
@@ -77,7 +77,7 @@ def _run(years: int, sma: int, buffer: float, trailing: float, equity: float) ->
     console.rule("[bold]1. In-sample backtest (full window)[/]")
     r = backtest_sma_trend(closes, **common)
     m = compute_full_metrics(r)
-    _print_metrics(console, "BTC SMA-{} buf {:.0%} stop {:.0%} — in-sample".format(sma, buffer, trailing), m, equity)
+    _print_metrics(console, f"BTC SMA-{sma} buf {buffer:.0%} stop {trailing:.0%} — in-sample", m, equity)
 
     # 2. Out-of-sample split. Use the in-sample params on the held-out window.
     console.rule("[bold]2. Out-of-sample evaluation (held-out final 30%)[/]")

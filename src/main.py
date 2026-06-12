@@ -10,8 +10,8 @@ from pathlib import Path
 
 from src.adapters.binance import BinanceAdapter
 from src.config import BotConfig, Mode, Secrets
-from src.data.market_data import MarketData
 from src.data.binance_ws import BinanceWebSocket
+from src.data.market_data import MarketData
 from src.execution.engine import ExecutionEngine
 from src.funding.poller import FundingPoller
 from src.killswitch import KillSwitch

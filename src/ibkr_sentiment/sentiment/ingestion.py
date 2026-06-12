@@ -59,7 +59,9 @@ def parse_rss(xml_text: str) -> list[NewsItem]:
     broken feed should never knock the bot over.
     """
     try:
-        root = ET.fromstring(xml_text)
+        # Feeds are operator-configured RSS/Atom URLs, not arbitrary
+        # user input; stdlib parsing is acceptable here.
+        root = ET.fromstring(xml_text)  # noqa: S314
     except ET.ParseError:
         return []
 

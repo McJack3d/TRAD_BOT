@@ -82,11 +82,12 @@ async def test_regime_quick_runs_end_to_end_without_asyncio_nesting(
 
 @pytest.mark.asyncio
 async def test_regime_status_live(tmp_path, db, monkeypatch):
+    from decimal import Decimal
     from unittest.mock import AsyncMock, patch
+
     from scripts import tradbot_regime
     from src.config import BotConfig
     from src.state.models import Position, PositionStatus, StateSnapshot, SystemStatusEnum
-    from decimal import Decimal
 
     cfg = BotConfig.from_yaml("config/regime_switch.yaml")
     cfg.starting_equity_usdt = Decimal("1000")
@@ -118,9 +119,10 @@ async def test_regime_status_live(tmp_path, db, monkeypatch):
     monkeypatch.setattr(tradbot_regime, "_load", mock_load)
 
     # Mock BinanceAdapter to return simulated ticker and allow connect/close
+    from datetime import UTC, datetime
+
     from src.adapters.binance import BinanceAdapter
     from src.adapters.exchange_base import Ticker
-    from datetime import datetime, UTC
 
     ticker_mock = Ticker(
         symbol="BTC/USDT:USDT",
@@ -148,10 +150,11 @@ async def test_regime_status_live(tmp_path, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_regime_positions_live(tmp_path, db, monkeypatch):
+    from decimal import Decimal
+
     from scripts import tradbot_regime
     from src.config import BotConfig
     from src.state.models import Position, PositionStatus
-    from decimal import Decimal
 
     cfg = BotConfig.from_yaml("config/regime_switch.yaml")
     await db.create_position(Position(
@@ -177,10 +180,11 @@ async def test_regime_positions_live(tmp_path, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_regime_equity_live(tmp_path, db, monkeypatch):
+    from decimal import Decimal
+
     from scripts import tradbot_regime
     from src.config import BotConfig
     from src.state.models import StateSnapshot
-    from decimal import Decimal
 
     cfg = BotConfig.from_yaml("config/regime_switch.yaml")
     await db.add_snapshot(StateSnapshot(
@@ -230,6 +234,7 @@ async def test_regime_enable_disable_live(tmp_path, db, monkeypatch):
 @pytest.mark.asyncio
 async def test_regime_evaluate_live(tmp_path, db, monkeypatch):
     from unittest.mock import AsyncMock
+
     from scripts import tradbot_regime
     from src.strategy.regime_live import RegimeLiveBot
 
@@ -250,14 +255,15 @@ async def test_regime_evaluate_live(tmp_path, db, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_regime_flatten_live(tmp_path, db, monkeypatch):
+    from datetime import UTC, datetime
+    from decimal import Decimal
     from unittest.mock import AsyncMock
+
     from scripts import tradbot_regime
+    from src.adapters.exchange_base import ExchangeOrder, Side
+    from src.config import BotConfig
     from src.state.models import Position, PositionStatus
     from src.strategy.regime_live import RegimeLiveBot
-    from src.adapters.exchange_base import ExchangeOrder, Side
-    from datetime import datetime, UTC
-    from decimal import Decimal
-    from src.config import BotConfig
 
     cfg = BotConfig.from_yaml("config/regime_switch.yaml")
     p = await db.create_position(Position(

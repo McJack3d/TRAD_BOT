@@ -82,11 +82,13 @@ class BinanceWebSocket:
         streams = [f"{s.replace('/', '').lower()}@bookTicker" for s in self.symbols]
         url = f"{base_url}?streams={'/'.join(streams)}"
 
+        backoff = 1.0
         while True:
             try:
                 log.info("ws.spot.connecting", url=url)
                 async with websockets.connect(url) as ws:
                     log.info("ws.spot.connected")
+                    backoff = 1.0
                     async for message in ws:
                         try:
                             msg = json.loads(message)
@@ -97,8 +99,9 @@ class BinanceWebSocket:
                 log.info("ws.spot.loop.cancelled")
                 raise
             except Exception as e:
-                log.warning("ws.spot.connection_lost", error=str(e))
-                await asyncio.sleep(5)
+                log.warning("ws.spot.connection_lost", error=str(e), retry_in=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
 
     async def _perp_loop(self) -> None:
         if not self.perp_symbols:
@@ -106,7 +109,7 @@ class BinanceWebSocket:
             return
 
         base_url = (
-            "wss://fstream.binancefutures.com/stream"
+            "wss://stream.binancefuture.com/stream"
             if self.testnet
             else "wss://fstream.binance.com/stream"
         )
@@ -117,11 +120,13 @@ class BinanceWebSocket:
             streams.append(f"{sym}@bookTicker")
         url = f"{base_url}?streams={'/'.join(streams)}"
 
+        backoff = 1.0
         while True:
             try:
                 log.info("ws.perp.connecting", url=url)
                 async with websockets.connect(url) as ws:
                     log.info("ws.perp.connected")
+                    backoff = 1.0
                     async for message in ws:
                         try:
                             msg = json.loads(message)
@@ -132,8 +137,9 @@ class BinanceWebSocket:
                 log.info("ws.perp.loop.cancelled")
                 raise
             except Exception as e:
-                log.warning("ws.perp.connection_lost", error=str(e))
-                await asyncio.sleep(5)
+                log.warning("ws.perp.connection_lost", error=str(e), retry_in=backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
 
     def _handle_spot(self, msg: dict) -> None:
         """Process incoming spot WebSocket message."""
