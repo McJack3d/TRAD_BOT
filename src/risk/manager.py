@@ -139,7 +139,12 @@ class RiskManager:
                         f"{p.symbol}: liq dist {liq_dist:.4f}, added {top_up}",
                     )
                 except Exception as e:
+                    # The position is approaching liquidation and we cannot
+                    # add margin — flatten now while we still can, rather
+                    # than waiting for the exchange to liquidate us.
                     log.exception("risk.margin.top_up.failed", symbol=p.symbol, error=str(e))
+                    await self._halt(f"margin top-up failed for {p.symbol}: {e}")
+                    return
 
         # Daily and cumulative loss stops.
         snap = await self.db.latest_snapshot()

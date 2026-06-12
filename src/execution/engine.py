@@ -140,6 +140,21 @@ class ExecutionEngine:
                 await self._emergency_unwind_spot(sc.spot, spot_filled)
                 return None
 
+            # If the perp hedge filled smaller than the spot bought, the
+            # surplus spot is unhedged — sell it back so the recorded
+            # position is delta-neutral. Sub-step residue is dust.
+            surplus = round_qty(spot_filled - perp_order.filled_qty, sc.qty_step)
+            if surplus >= sc.qty_step:
+                log.warning(
+                    "execution.open_pair.partial_hedge_trimming_spot",
+                    symbol=symbol,
+                    spot_filled=str(spot_filled),
+                    perp_filled=str(perp_order.filled_qty),
+                    surplus=str(surplus),
+                )
+                await self._emergency_unwind_spot(sc.spot, surplus)
+                spot_filled -= surplus
+
             position = await self.db.create_position(
                 Position(
                     symbol=symbol,
@@ -388,6 +403,21 @@ class ExecutionEngine:
                     return refreshed
             except Exception as e:
                 log.warning("execution.fetch_order.error", symbol=symbol, error=str(e))
+
+        # Still not terminal after the deadline. Cancel so the order can't
+        # rest on the book untracked, then take the exchange's final word
+        # (the cancel may race a fill — the last fetch decides).
+        log.warning("execution.wait_terminal.timeout_cancelling", symbol=symbol, client_id=client_id)
+        try:
+            await self.exchange.cancel_order(client_id, symbol, leg)
+        except Exception as e:
+            log.warning("execution.cancel_order.error", symbol=symbol, error=str(e))
+        try:
+            refreshed = await self.exchange.fetch_order(client_id, symbol, leg)
+            if refreshed is not None:
+                return refreshed
+        except Exception as e:
+            log.warning("execution.fetch_order.error", symbol=symbol, error=str(e))
         return result
 
     async def _persist_order_outcome(
