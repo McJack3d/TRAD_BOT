@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from src.adapters.binance import BinanceAdapter
 from src.adapters.exchange_base import ExchangeAdapter, ExchangeOrder, Side
@@ -36,7 +36,6 @@ from src.state.models import (
     Position,
     PositionStatus,
     StateSnapshot,
-    SystemStatus,
     SystemStatusEnum,
 )
 from src.state.pnl import build_state_snapshot, compute_realized_pnl
@@ -451,23 +450,31 @@ class RegimeLiveBot:
                 return
 
             closed_trades = []
-            for p in closed_positions:
-                if p.symbol == symbol:
-                    exit_idx = None
+            # Sort same-symbol positions by closed_at to identify the most recent
+            symbol_positions = sorted(
+                [p for p in closed_positions if p.symbol == symbol],
+                key=lambda p: p.closed_at or datetime.min.replace(tzinfo=UTC),
+            )
+            for i, p in enumerate(symbol_positions):
+                exit_idx = None
+                # Only apply last_loss_exit_bar to the LAST (most recent) trade
+                # to prevent stale bar indices from propagating to older trades
+                if i == len(symbol_positions) - 1:
                     exit_bar_str = meta.get(f"{symbol}_last_loss_exit_bar", None)
                     if exit_bar_str:
                         exit_idx = int(exit_bar_str)
-                    elif p.closed_at is not None:
-                        diffs = np.abs((df.index - pd.Timestamp(p.closed_at)).total_seconds())
-                        if len(diffs) > 0:
-                            exit_idx = int(np.argmin(diffs))
 
-                    closed_trades.append({
-                        "symbol": p.symbol,
-                        "net_pnl": p.realized_pnl,
-                        "exit_bar_index": exit_idx,
-                        "exit_ts": p.closed_at,
-                    })
+                if exit_idx is None and p.closed_at is not None:
+                    diffs = np.abs((df.index - pd.Timestamp(p.closed_at)).total_seconds())
+                    if len(diffs) > 0:
+                        exit_idx = int(np.argmin(diffs))
+
+                closed_trades.append({
+                    "symbol": p.symbol,
+                    "net_pnl": p.realized_pnl,
+                    "exit_bar_index": exit_idx,
+                    "exit_ts": p.closed_at,
+                })
 
             cooloff_check = check_asset_cooloff(
                 symbol,
@@ -711,9 +718,8 @@ class RegimeLiveBot:
             return res.scalar_one_or_none()
 
     async def _get_meta(self) -> dict[str, str]:
-        async with self.db.session() as s:
-            row = (await s.execute(select(SystemStatus).where(SystemStatus.id == 1))).scalar_one_or_none()
-            raw = row.halt_reason if row else None
+        """Read strategy metadata from the dedicated strategy_meta column."""
+        raw = await self.db.get_strategy_meta()
         if not raw:
             return {}
         out = {}
@@ -724,14 +730,15 @@ class RegimeLiveBot:
         return out
 
     async def _set_meta(self, **kwargs: str) -> None:
+        """Write strategy metadata to the dedicated strategy_meta column.
+
+        This is independent of halt_reason, so halting the bot no longer
+        destroys metadata (stop prices, entry legs, etc.).
+        """
         meta = await self._get_meta()
         meta.update({k: str(v).lower() for k, v in kwargs.items()})
         encoded = "|".join(f"{k}:{v}" for k, v in meta.items())
-        async with self.db.session() as s:
-            await s.execute(
-                update(SystemStatus).where(SystemStatus.id == 1).values(halt_reason=encoded)
-            )
-            await s.commit()
+        await self.db.set_strategy_meta(encoded)
 
     def _get_symbol_config(self, symbol: str):
         if self.symbol_configs:
@@ -832,11 +839,19 @@ async def run(config_path: str, kill_file: str) -> None:
     db = Database(secrets.bot_db_path)
     await db.init(starting_equity=cfg.starting_equity_usdt)
 
-    exchange = BinanceAdapter(
-        api_key=secrets.binance_api_key,
-        api_secret=secrets.binance_api_secret,
-        testnet=secrets.binance_testnet,
-    )
+    if cfg.mode == Mode.PAPER:
+        from src.adapters.paper_binance import PaperBinanceAdapter
+        exchange = PaperBinanceAdapter(
+            starting_usdt=cfg.starting_equity_usdt,
+            quote_asset="USDT",
+            spot_only=False,
+        )
+    else:
+        exchange = BinanceAdapter(
+            api_key=secrets.binance_api_key,
+            api_secret=secrets.binance_api_secret,
+            testnet=secrets.binance_testnet,
+        )
 
     if cfg.mode != Mode.DRY_RUN:
         await exchange.connect()

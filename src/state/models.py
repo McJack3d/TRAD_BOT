@@ -171,6 +171,7 @@ class SystemStatus(Base):
         SAEnum(SystemStatusEnum), default=SystemStatusEnum.ACTIVE
     )
     halt_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    strategy_meta: Mapped[str | None] = mapped_column(String(2048), nullable=True)
     last_reconciliation_ok: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

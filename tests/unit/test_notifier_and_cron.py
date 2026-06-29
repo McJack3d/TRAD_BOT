@@ -94,10 +94,21 @@ def test_plist_contains_expected_fields(tmp_path: Path) -> None:
     assert "/.venv/bin/python" in body
 
 
-def test_status_when_not_installed(tmp_path: Path) -> None:
+def test_status_when_not_installed(tmp_path: Path, monkeypatch) -> None:
     import sys
+    import src.scheduler
+    from src.scheduler import status, SchedulerPaths
 
-    from src.scheduler import status
+    def mock_paths(project_root: Path) -> SchedulerPaths:
+        return SchedulerPaths(
+            plist=tmp_path / "Library" / "LaunchAgents" / "com.tradbot.daily.plist",
+            stdout_log=tmp_path / "Library" / "Logs" / "tradbot" / "evaluate.log",
+            stderr_log=tmp_path / "Library" / "Logs" / "tradbot" / "evaluate.err",
+            project_root=project_root,
+            venv_python=project_root / ".venv" / "bin" / "python",
+        )
+
+    monkeypatch.setattr(src.scheduler, "paths", mock_paths)
 
     # On non-macOS or when no plist exists, status reports not installed.
     s = status(tmp_path)
@@ -106,6 +117,7 @@ def test_status_when_not_installed(tmp_path: Path) -> None:
     else:
         # macOS: should report not installed since this is a fake path.
         assert s["installed"] is False
+
 
 
 def test_paper_adapter_with_notifier_smoke(tmp_path: Path) -> None:

@@ -223,12 +223,12 @@ async def test_regime_enable_disable_live(tmp_path, db, monkeypatch):
     assert rc == 0
     status = await db.get_status()
     assert status.status == SystemStatusEnum.ACTIVE
-    assert "enabled:true" in status.halt_reason
+    assert "enabled:true" in status.strategy_meta
 
     rc = await tradbot_regime.cmd_regime_disable(argparse.Namespace(), console)
     assert rc == 0
     status = await db.get_status()
-    assert "enabled:false" in status.halt_reason
+    assert "enabled:false" in status.strategy_meta
 
 
 @pytest.mark.asyncio

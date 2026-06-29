@@ -64,6 +64,10 @@ def check_asset_cooloff(
 
     # Sort symbol trades chronologically
     def sort_key(t: Any) -> tuple[int, Any]:
+        # Prefer absolute UTC timestamps for cross-asset correctness
+        ts = _get_field(t, ["exit_ts", "closed_at", "exit_time", "timestamp", "ts"])
+        if ts is not None:
+            return (0, ts)
         bar_idx = _get_field(
             t,
             [
@@ -76,10 +80,7 @@ def check_asset_cooloff(
             ],
         )
         if bar_idx is not None:
-            return (0, int(bar_idx))
-        ts = _get_field(t, ["exit_ts", "closed_at", "exit_time", "timestamp", "ts"])
-        if ts is not None:
-            return (1, ts)
+            return (1, int(bar_idx))
         return (2, 0)
 
     symbol_trades = sorted(symbol_trades, key=sort_key)
@@ -151,6 +152,10 @@ def check_consecutive_losses(
 
     # Sort trades chronologically
     def sort_key(t: Any) -> tuple[int, Any]:
+        # Prefer absolute UTC timestamps for cross-asset correctness
+        ts = _get_field(t, ["exit_ts", "closed_at", "exit_time", "timestamp", "ts"])
+        if ts is not None:
+            return (0, ts)
         bar_idx = _get_field(
             t,
             [
@@ -163,10 +168,7 @@ def check_consecutive_losses(
             ],
         )
         if bar_idx is not None:
-            return (0, int(bar_idx))
-        ts = _get_field(t, ["exit_ts", "closed_at", "exit_time", "timestamp", "ts"])
-        if ts is not None:
-            return (1, ts)
+            return (1, int(bar_idx))
         return (2, 0)
 
     sorted_trades = sorted(closed_trades, key=sort_key)

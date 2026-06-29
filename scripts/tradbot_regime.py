@@ -11,7 +11,7 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
-from sqlalchemy import desc, select, update
+from sqlalchemy import desc, select
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
@@ -23,7 +23,6 @@ from src.state.models import (
     Position,
     PositionStatus,
     StateSnapshot,
-    SystemStatus,
     SystemStatusEnum,
 )
 from src.state.pnl import compute_realized_pnl
@@ -75,11 +74,12 @@ def _bar(used: float, total: float, width: int = 20) -> str:
     return f"[{colour}]{'█' * filled}{'░' * (width - filled)}[/] {frac:.0%}"
 
 
-def parse_meta(halt_reason: str | None) -> dict[str, str]:
-    if not halt_reason:
+def parse_meta(raw_meta: str | None) -> dict[str, str]:
+    """Decode the pipe-delimited key:value metadata string."""
+    if not raw_meta:
         return {}
     out = {}
-    for chunk in halt_reason.split("|"):
+    for chunk in raw_meta.split("|"):
         if ":" in chunk:
             k, v = chunk.split(":", 1)
             out[k] = v
@@ -249,15 +249,24 @@ async def cmd_regime_status(args, console: Console) -> int:
     except Exception:
         max_losses = 4
 
-    from src.adapters.binance import BinanceAdapter
-    from src.config import Secrets
+    from src.config import Mode, Secrets
 
-    secrets = Secrets()
-    exchange = BinanceAdapter(
-        api_key=secrets.binance_api_key,
-        api_secret=secrets.binance_api_secret,
-        testnet=secrets.binance_testnet,
-    )
+    is_live = cfg.mode == Mode.LIVE
+    if is_live:
+        from src.adapters.binance import BinanceAdapter
+        secrets = Secrets()
+        exchange = BinanceAdapter(
+            api_key=secrets.binance_api_key,
+            api_secret=secrets.binance_api_secret,
+            testnet=secrets.binance_testnet,
+        )
+    else:
+        from src.adapters.paper_binance import PaperBinanceAdapter
+        exchange = PaperBinanceAdapter(
+            starting_usdt=cfg.starting_equity_usdt,
+            quote_asset="USDT",
+            spot_only=False,
+        )
 
     try:
         await exchange.connect()
@@ -266,7 +275,7 @@ async def cmd_regime_status(args, console: Console) -> int:
         open_positions = await db.open_positions()
 
         # Header banner
-        meta = parse_meta(status.halt_reason)
+        meta = parse_meta(status.strategy_meta)
         enabled = meta.get("enabled", "false") == "true"
 
         if status.status == SystemStatusEnum.HALTED:
@@ -506,23 +515,15 @@ async def cmd_regime_enable(args, console: Console) -> int:
         console.print(f"[red]✗[/] {e}")
         return 1
     try:
-        async with db.session() as s:
-            row = (
-                await s.execute(select(SystemStatus).where(SystemStatus.id == 1))
-            ).scalar_one_or_none()
-            raw = row.halt_reason if row else None
-
+        # Read current metadata from the dedicated strategy_meta column
+        raw = await db.get_strategy_meta()
         meta = parse_meta(raw)
         meta["enabled"] = "true"
         encoded = "|".join(f"{k}:{v}" for k, v in meta.items())
+        await db.set_strategy_meta(encoded)
 
-        async with db.session() as s:
-            await s.execute(
-                update(SystemStatus)
-                .where(SystemStatus.id == 1)
-                .values(status=SystemStatusEnum.ACTIVE, halt_reason=encoded)
-            )
-            await s.commit()
+        # Also set system status to ACTIVE
+        await db.set_status(SystemStatusEnum.ACTIVE)
         console.print("[green]✓[/] Regime-switching bot enabled and set to ACTIVE.")
     finally:
         await db.close()
@@ -537,23 +538,12 @@ async def cmd_regime_disable(args, console: Console) -> int:
         console.print(f"[red]✗[/] {e}")
         return 1
     try:
-        async with db.session() as s:
-            row = (
-                await s.execute(select(SystemStatus).where(SystemStatus.id == 1))
-            ).scalar_one_or_none()
-            raw = row.halt_reason if row else None
-
+        # Read current metadata from the dedicated strategy_meta column
+        raw = await db.get_strategy_meta()
         meta = parse_meta(raw)
         meta["enabled"] = "false"
         encoded = "|".join(f"{k}:{v}" for k, v in meta.items())
-
-        async with db.session() as s:
-            await s.execute(
-                update(SystemStatus)
-                .where(SystemStatus.id == 1)
-                .values(halt_reason=encoded)
-            )
-            await s.commit()
+        await db.set_strategy_meta(encoded)
         console.print("[yellow]⏸[/] Regime-switching bot disabled.")
     finally:
         await db.close()

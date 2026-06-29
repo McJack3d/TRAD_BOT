@@ -88,6 +88,22 @@ class Database:
             )
             await s.commit()
 
+    async def get_strategy_meta(self) -> str | None:
+        """Read the dedicated strategy metadata column."""
+        async with self._session() as s:
+            status = await s.get(SystemStatus, 1)
+            return status.strategy_meta if status else None
+
+    async def set_strategy_meta(self, meta: str | None) -> None:
+        """Write to the dedicated strategy metadata column (does NOT touch halt_reason)."""
+        async with self._session() as s:
+            await s.execute(
+                update(SystemStatus)
+                .where(SystemStatus.id == 1)
+                .values(strategy_meta=meta)
+            )
+            await s.commit()
+
     # ---- positions ----------------------------------------------------
 
     async def open_positions(self) -> list[Position]:
